@@ -1,0 +1,28 @@
+# Datasets — too large for git
+data/
+validation/
+cache/
+
+# Large checkpoints — only push best_model_weights.pth
+outputs/resnet9/checkpoints/best_model.pth
+outputs/resnet9/checkpoints/epoch_*.pth
+
+# TensorBoard logs
+outputs/resnet9/tb_logs/
+
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Misc
+nohup.out
+train_log.txt
+manifest_*.csv
