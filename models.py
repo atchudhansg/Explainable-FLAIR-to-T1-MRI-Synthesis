@@ -187,6 +187,17 @@ class PatchGANDiscriminator(nn.Module):
         x = torch.cat([img_a, img_b], dim=1)
         return self.model(x)
 
+    def forward_features(self, img_a, img_b):
+        """Forward pass returning (prediction, intermediate_features).
+        Features are captured after each LeakyReLU block for feature matching loss."""
+        x = torch.cat([img_a, img_b], dim=1)
+        features = []
+        for layer in self.model:
+            x = layer(x)
+            if isinstance(layer, nn.LeakyReLU):
+                features.append(x)
+        return x, features
+
 
 # ============================================================
 # UTILITY

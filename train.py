@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.amp import GradScaler
-from pytorch_msssim import ssim as compute_ssim
+from pytorch_msssim import ssim as compute_ssim, ms_ssim as compute_ms_ssim
 from skimage.metrics import peak_signal_noise_ratio as psnr
 from scipy import stats
 import matplotlib
@@ -21,8 +21,53 @@ import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
+import torchvision.models as tv_models
 from models import get_model_pair, count_parameters
 from dataset import create_dataloaders, create_brats2023_loader
+
+
+# ============================================================
+# VGG PERCEPTUAL LOSS
+# ============================================================
+
+class VGGFeatureExtractor(nn.Module):
+    """Extract features from VGG19 for perceptual loss.
+    Compares feature-level similarity (textures, edges, structure)
+    instead of pixel-level similarity (which causes blur)."""
+    def __init__(self, device='cuda'):
+        super().__init__()
+        vgg = tv_models.vgg19(weights=tv_models.VGG19_Weights.DEFAULT).features
+        # relu1_2, relu2_2, relu3_4 — multi-scale feature matching
+        self.blocks = nn.ModuleList([
+            nn.Sequential(*list(vgg.children())[:4]),   # relu1_2 (64ch)
+            nn.Sequential(*list(vgg.children())[4:9]),  # relu2_2 (128ch)
+            nn.Sequential(*list(vgg.children())[9:18]), # relu3_4 (256ch)
+        ])
+        for p in self.parameters():
+            p.requires_grad = False
+        # ImageNet normalization constants
+        self.register_buffer('mean', torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer('std',  torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+
+    def forward(self, x):
+        # [-1,1] → [0,1] → ImageNet-normalized
+        x = (x + 1) / 2.0
+        x = (x - self.mean) / self.std
+        features = []
+        for block in self.blocks:
+            x = block(x)
+            features.append(x)
+        return features
+
+
+def perceptual_loss(vgg, fake, real):
+    """Multi-scale feature matching loss."""
+    fake_feats = vgg(fake)
+    real_feats = vgg(real)
+    loss = 0
+    for ff, rf in zip(fake_feats, real_feats):
+        loss += nn.L1Loss()(ff, rf)
+    return loss
 
 # ============================================================
 # CONFIG
@@ -38,6 +83,16 @@ def parse_args():
     p.add_argument('--beta2', type=float, default=0.999)
     p.add_argument('--lambda_l1', type=float, default=100.0)
     p.add_argument('--lambda_ssim', type=float, default=10.0)
+    p.add_argument('--lambda_perceptual', type=float, default=0.0,
+                   help='VGG perceptual loss weight. 0=off. Recommended: 10.0')
+    p.add_argument('--lambda_feat', type=float, default=0.0,
+                   help='Discriminator feature matching loss weight. 0=off. Recommended: 10.0')
+    p.add_argument('--lsgan', action='store_true',
+                   help='Use LSGAN (MSE) loss instead of vanilla (BCE). More stable gradients.')
+    p.add_argument('--ms_ssim', action='store_true',
+                   help='Use Multi-Scale SSIM loss instead of single-scale. Better structural fidelity.')
+    p.add_argument('--lr_decay_start', type=int, default=-1,
+                   help='Epoch to start linear LR decay. -1=no decay. Recommended: epochs//2')
     p.add_argument('--data_dir', type=str, default='/home/atchu2504/training/data')
     p.add_argument('--output_dir', type=str, default='/home/atchu2504/training/outputs')
     p.add_argument('--num_workers', type=int, default=4)
@@ -49,6 +104,10 @@ def parse_args():
     # Resume from checkpoint
     p.add_argument('--resume', action='store_true',
                    help='Resume from latest periodic checkpoint in output_dir/model/checkpoints/')
+    # Fine-tune from a specific checkpoint (loads weights only, fresh epoch count + optimizer)
+    p.add_argument('--finetune_from', type=str, default='',
+                   help='Path to a checkpoint (.pth) to load gen+disc weights from. '
+                        'Starts fresh epoch count. Use with a new --output_dir for v3 etc.')
     # PersistentDataset cache (big speedup from epoch 2 onward)
     p.add_argument('--cache_dir', type=str,
                    default='/home/atchu2504/training/cache',
@@ -135,10 +194,29 @@ def bootstrap_ci(values, n_boot=1000, ci=0.95):
 # TRAINING
 # ============================================================
 
+def _get_disc_features(disc, img_a, img_b):
+    """Extract intermediate features from discriminator (handles torch.compile)."""
+    raw = disc._orig_mod if hasattr(disc, '_orig_mod') else disc
+    return raw.forward_features(img_a, img_b)
+
+
+def feature_matching_loss(disc, flair, fake_t1, t1_real):
+    """L1 distance between disc features of real vs fake pairs (pix2pixHD)."""
+    _, fake_feats = _get_disc_features(disc, flair, fake_t1)
+    _, real_feats = _get_disc_features(disc, flair, t1_real)
+    loss = 0
+    for ff, rf in zip(fake_feats, real_feats):
+        loss += nn.L1Loss()(ff, rf.detach())
+    return loss
+
+
 def train_one_epoch(gen, disc, train_loader, opt_g, opt_d, scaler_g, scaler_d,
-                    criterion_gan, lambda_l1, lambda_ssim, device, epoch):
+                    criterion_gan, lambda_l1, lambda_ssim, device, epoch,
+                    vgg=None, lambda_perceptual=0.0, lambda_feat=0.0,
+                    use_ms_ssim=False):
     gen.train(); disc.train()
-    metrics = {'g_loss': [], 'd_loss': [], 'g_adv': [], 'g_l1': [], 'g_ssim': []}
+    metrics = {'g_loss': [], 'd_loss': [], 'g_adv': [], 'g_l1': [],
+               'g_ssim': [], 'g_percep': [], 'g_feat': []}
 
     pbar = tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]", leave=False)
     for batch in pbar:
@@ -170,9 +248,24 @@ def train_one_epoch(gen, disc, train_loader, opt_g, opt_d, scaler_g, scaler_d,
             # SSIM loss (needs [0,1])
             gen_01 = (fake_t1 + 1) / 2.0
             tgt_01 = (t1_real + 1) / 2.0
-            ssim_val = compute_ssim(gen_01, tgt_01, data_range=1.0, size_average=True)
+            if use_ms_ssim:
+                ssim_val = compute_ms_ssim(gen_01, tgt_01, data_range=1.0, size_average=True)
+            else:
+                ssim_val = compute_ssim(gen_01, tgt_01, data_range=1.0, size_average=True)
             loss_g_ssim = 1.0 - ssim_val
             loss_g = loss_g_adv + lambda_l1 * loss_g_l1 + lambda_ssim * loss_g_ssim
+
+            # Perceptual loss (VGG feature matching)
+            loss_g_percep = torch.tensor(0.0, device=device)
+            if vgg is not None and lambda_perceptual > 0:
+                loss_g_percep = perceptual_loss(vgg, fake_t1, t1_real)
+                loss_g = loss_g + lambda_perceptual * loss_g_percep
+
+            # Discriminator feature matching loss (pix2pixHD)
+            loss_g_feat = torch.tensor(0.0, device=device)
+            if lambda_feat > 0:
+                loss_g_feat = feature_matching_loss(disc, flair, fake_t1, t1_real)
+                loss_g = loss_g + lambda_feat * loss_g_feat
 
         scaler_g.scale(loss_g).backward()
         scaler_g.step(opt_g)
@@ -183,6 +276,8 @@ def train_one_epoch(gen, disc, train_loader, opt_g, opt_d, scaler_g, scaler_d,
         metrics['g_adv'].append(loss_g_adv.item())
         metrics['g_l1'].append(loss_g_l1.item())
         metrics['g_ssim'].append(loss_g_ssim.item())
+        metrics['g_percep'].append(loss_g_percep.item())
+        metrics['g_feat'].append(loss_g_feat.item())
 
         pbar.set_postfix(G=f"{loss_g.item():.4f}", D=f"{loss_d.item():.4f}")
 
@@ -238,7 +333,9 @@ def main():
     np.random.seed(args.seed)
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    torch.backends.cudnn.benchmark = True  # speeds up fixed-size input training
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True   # L4/Ada: 2-3x matmul throughput
+    torch.backends.cudnn.allow_tf32 = True          # conv ops via TF32
     print(f"\n{'='*60}")
     print(f"  FLAIR -> T1 Synthesis Training")
     print(f"  Model: {args.model.upper()}")
@@ -246,7 +343,10 @@ def main():
     if torch.cuda.is_available():
         print(f"  VRAM: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB")
     print(f"  Epochs: {args.epochs}, Batch: {args.batch_size}, LR: {args.lr}")
-    print(f"  Lambda L1: {args.lambda_l1}, Lambda SSIM: {args.lambda_ssim}")
+    print(f"  Lambda L1: {args.lambda_l1}, Lambda SSIM: {args.lambda_ssim}, "
+          f"Lambda Perceptual: {args.lambda_perceptual}, Lambda Feat: {args.lambda_feat}")
+    if args.lr_decay_start >= 0:
+        print(f"  LR Decay: linear decay from epoch {args.lr_decay_start}")
     print(f"{'='*60}\n")
 
     # Output dirs
@@ -271,6 +371,19 @@ def main():
     print(f"Generator params: {count_parameters(gen)/1e6:.2f}M")
     print(f"Discriminator params: {count_parameters(disc)/1e6:.2f}M")
 
+    # ---- Fine-tune from a specific checkpoint (weights only, BEFORE compile) ----
+    if args.finetune_from:
+        if os.path.exists(args.finetune_from):
+            ckpt = torch.load(args.finetune_from, map_location=device, weights_only=False)
+            def _strip(sd):
+                return {k.replace('_orig_mod.', ''): v for k, v in sd.items()}
+            gen.load_state_dict(_strip(ckpt['gen']))
+            disc.load_state_dict(_strip(ckpt['disc']))
+            print(f"\nFine-tuning from {args.finetune_from}")
+            print(f"  Loaded gen + disc weights. Fresh epoch count + optimizer (lr={args.lr}).\n")
+        else:
+            print(f"WARNING: --finetune_from path not found: {args.finetune_from}. Starting fresh.")
+
     # torch.compile: fuses ops, gives 20-30% speedup on PyTorch 2.x (L4/Ampere)
     if args.compile:
         print("  Compiling models with torch.compile (one-time warmup on first batch)...")
@@ -288,12 +401,32 @@ def main():
     scaler_g = GradScaler('cuda')
     scaler_d = GradScaler('cuda')
 
-    criterion_gan = nn.BCEWithLogitsLoss()
+    criterion_gan = nn.MSELoss() if args.lsgan else nn.BCEWithLogitsLoss()
+    if args.lsgan:
+        print("  Using LSGAN (MSE) loss for more stable gradients")
+
+    # VGG perceptual loss
+    vgg = None
+    if args.lambda_perceptual > 0:
+        print("Loading VGG19 for perceptual loss...")
+        vgg = VGGFeatureExtractor(device=device).to(device)
+        vgg.eval()
+        print(f"  VGG19 loaded (frozen, {sum(p.numel() for p in vgg.parameters())/1e6:.1f}M params)\n")
+
+    # LR scheduler — linear decay
+    sched_g, sched_d = None, None
+    if args.lr_decay_start >= 0:
+        def lr_lambda(epoch):
+            if epoch < args.lr_decay_start:
+                return 1.0
+            return max(0.0, 1.0 - (epoch - args.lr_decay_start) / (args.epochs - args.lr_decay_start))
+        sched_g = torch.optim.lr_scheduler.LambdaLR(opt_g, lr_lambda)
+        sched_d = torch.optim.lr_scheduler.LambdaLR(opt_d, lr_lambda)
 
     # Training history
     history = {
         'train_g_loss': [], 'train_d_loss': [],
-        'train_g_adv': [], 'train_g_l1': [], 'train_g_ssim': [],
+        'train_g_adv': [], 'train_g_l1': [], 'train_g_ssim': [], 'train_g_percep': [], 'train_g_feat': [],
         'val_psnr': [], 'val_ssim': [], 'val_mae': [], 'val_rmse': [],
         'val_mse': [], 'val_precision': [], 'val_recall': [], 'val_f1': [],
     }
@@ -337,8 +470,15 @@ def main():
         # Train
         train_m = train_one_epoch(
             gen, disc, train_loader, opt_g, opt_d, scaler_g, scaler_d,
-            criterion_gan, args.lambda_l1, args.lambda_ssim, device, epoch
+            criterion_gan, args.lambda_l1, args.lambda_ssim, device, epoch,
+            vgg=vgg, lambda_perceptual=args.lambda_perceptual,
+            lambda_feat=args.lambda_feat, use_ms_ssim=args.ms_ssim
         )
+
+        # LR scheduler step
+        if sched_g is not None:
+            sched_g.step()
+            sched_d.step()
 
         # Validate
         val_m = validate(gen, val_loader, device)
@@ -347,7 +487,7 @@ def main():
         peak_mem = torch.cuda.max_memory_allocated() / 1e9
 
         # Log
-        for k in ['g_loss', 'd_loss', 'g_adv', 'g_l1', 'g_ssim']:
+        for k in ['g_loss', 'd_loss', 'g_adv', 'g_l1', 'g_ssim', 'g_percep', 'g_feat']:
             history[f'train_{k}'].append(train_m[k])
         for k in ['psnr', 'ssim', 'mae', 'rmse', 'mse', 'precision', 'recall', 'f1']:
             history[f'val_{k}'].append(val_m[k])
@@ -356,7 +496,8 @@ def main():
         writer.add_scalars('Loss/Train', {
             'G_total': train_m['g_loss'], 'D': train_m['d_loss'],
             'G_adv': train_m['g_adv'], 'G_L1': train_m['g_l1'],
-            'G_SSIM': train_m['g_ssim'],
+            'G_SSIM': train_m['g_ssim'], 'G_Percep': train_m['g_percep'],
+            'G_Feat': train_m['g_feat'],
         }, epoch)
         writer.add_scalars('Metrics/Val', {
             'PSNR': val_m['psnr'], 'SSIM': val_m['ssim'],
@@ -371,7 +512,8 @@ def main():
 
         print(f"\nEpoch {epoch+1}/{args.epochs} ({epoch_time:.0f}s, GPU: {peak_mem:.2f}GB)")
         print(f"  Train: G={train_m['g_loss']:.4f} D={train_m['d_loss']:.4f} "
-              f"Adv={train_m['g_adv']:.4f} L1={train_m['g_l1']:.4f} SSIM={train_m['g_ssim']:.4f}")
+              f"Adv={train_m['g_adv']:.4f} L1={train_m['g_l1']:.4f} SSIM={train_m['g_ssim']:.4f}"
+              f" Percep={train_m['g_percep']:.4f} Feat={train_m['g_feat']:.4f}")
         print(f"  Val:   PSNR={val_m['psnr']:.2f} SSIM={val_m['ssim']:.4f} "
               f"MAE={val_m['mae']:.4f} RMSE={val_m['rmse']:.4f}")
         print(f"         P={val_m['precision']:.4f} R={val_m['recall']:.4f} F1={val_m['f1']:.4f}")
@@ -459,6 +601,11 @@ def main():
         'lr': args.lr,
         'lambda_l1': args.lambda_l1,
         'lambda_ssim': args.lambda_ssim,
+        'lambda_perceptual': args.lambda_perceptual,
+        'lambda_feat': args.lambda_feat,
+        'lsgan': args.lsgan,
+        'ms_ssim': args.ms_ssim,
+        'lr_decay_start': args.lr_decay_start,
         'total_training_time_hours': total_time / 3600,
         'peak_gpu_memory_gb': peak_gpu,
         'allocated_gpu_memory_gb': alloc_gpu,
@@ -497,6 +644,10 @@ def main():
     ax2.plot(epochs_x, history['train_g_adv'], label='Adversarial', linewidth=1.5)
     ax2.plot(epochs_x, history['train_g_l1'], label='L1', linewidth=1.5)
     ax2.plot(epochs_x, history['train_g_ssim'], label='SSIM', linewidth=1.5)
+    if any(v > 0 for v in history.get('train_g_percep', [])):
+        ax2.plot(epochs_x, history['train_g_percep'], label='Perceptual', linewidth=1.5)
+    if any(v > 0 for v in history.get('train_g_feat', [])):
+        ax2.plot(epochs_x, history['train_g_feat'], label='Feat Match', linewidth=1.5)
     ax2.set_xlabel('Epoch'); ax2.set_ylabel('Loss'); ax2.set_title('Generator Loss Components')
     ax2.legend(); ax2.grid(True, alpha=0.3)
     plt.tight_layout()
