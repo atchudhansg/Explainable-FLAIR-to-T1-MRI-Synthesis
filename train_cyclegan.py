@@ -37,8 +37,8 @@ from dataset import create_dataloaders, create_brats2023_loader
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument('--epochs', type=int, default=100)
-    p.add_argument('--batch_size', type=int, default=32)
+    p.add_argument('--epochs', type=int, default=50)
+    p.add_argument('--batch_size', type=int, default=12)
     p.add_argument('--lr', type=float, default=2e-4)
     p.add_argument('--beta1', type=float, default=0.5)
     p.add_argument('--beta2', type=float, default=0.999)
@@ -355,11 +355,9 @@ def main():
 
         print(f"\nEpoch {epoch+1}/{args.epochs} ({epoch_time:.0f}s, GPU: {peak_mem:.2f}GB)")
         print(f"  Train: G={train_m['g_loss']:.4f} D={train_m['d_loss']:.4f} "
-              f"Cycle={train_m['cycle']:.4f} Idt={train_m['identity']:.4f} "
-              f"Adv_AB={train_m['adv_ab']:.4f} Adv_BA={train_m['adv_ba']:.4f}")
-        print(f"  Val:   PSNR={val_m['psnr']:.2f} SSIM={val_m['ssim']:.4f} "
-              f"MAE={val_m['mae']:.4f} RMSE={val_m['rmse']:.4f}")
-        print(f"         P={val_m['precision']:.4f} R={val_m['recall']:.4f} F1={val_m['f1']:.4f}")
+              f"Cycle={train_m['cycle']:.4f} Idt={train_m['identity']:.4f}")
+        print(f"  Val:   ★ SSIM={val_m['ssim']:.4f} MAE={val_m['mae']:.4f} ★  "
+              f"[PSNR={val_m['psnr']:.2f} RMSE={val_m['rmse']:.4f}]")
 
         # Save best (based on G_AB SSIM)
         if val_m['ssim'] > best_ssim:
@@ -408,29 +406,26 @@ def main():
     # ============================================================
     final_val = validate(g_ab, val_loader, device)
 
-    print(f"\n{'='*60}")
-    print(f"  CycleGAN FINAL RESULTS (with 95% Bootstrap CIs)")
-    print(f"{'='*60}")
+    print(f"\n{'='*80}")
+    print(f"  ★★★ CYCLEGAN BENCHMARK RESULTS (for paper comparison) ★★★")
+    print(f"{'='*80}")
 
     ci_results = {}
     for metric_name, values in [
-        ('PSNR', final_val['psnr_all']), ('SSIM', final_val['ssim_all']),
-        ('MAE', final_val['mae_all']), ('RMSE', final_val['rmse_all']),
+        ('SSIM', final_val['ssim_all']), ('MAE', final_val['mae_all']),
+        ('PSNR', final_val['psnr_all']), ('RMSE', final_val['rmse_all']),
     ]:
         mean, lo, hi = bootstrap_ci(values, n_boot=1000)
         ci_results[metric_name] = {'mean': mean, 'ci_low': lo, 'ci_high': hi}
-        print(f"  {metric_name}: {mean:.4f} [{lo:.4f}, {hi:.4f}]")
+        star = "  ★★★ " if metric_name in ['SSIM', 'MAE'] else "      "
+        print(f"{star}{metric_name}: {mean:.4f} [{lo:.4f}, {hi:.4f}]")
 
-    print(f"\n  Precision: {final_val['precision']:.4f}")
-    print(f"  Recall:    {final_val['recall']:.4f}")
-    print(f"  F1 Score:  {final_val['f1']:.4f}")
-    print(f"\n  Confusion Matrix:")
-    print(f"    TP: {final_val['tp']:.0f}  FP: {final_val['fp']:.0f}")
-    print(f"    FN: {final_val['fn']:.0f}  TN: {final_val['tn']:.0f}")
-    print(f"\n  Training Time: {total_time/3600:.2f} hours")
-    print(f"  Peak GPU Memory: {peak_gpu:.2f} GB")
-    print(f"  Best SSIM: {best_ssim:.4f}")
-    print(f"{'='*60}")
+    print(f"\n  Additional Metrics:")
+    print(f"    Precision: {final_val['precision']:.4f}")
+    print(f"    Recall:    {final_val['recall']:.4f}")
+    print(f"    F1 Score:  {final_val['f1']:.4f}")
+    print(f"\n  Training: {total_time/3600:.2f}h | Peak GPU: {peak_gpu:.2f}GB | Best SSIM: {best_ssim:.4f}")
+    print(f"{'='*80}")
 
     # Save report JSON
     report = {
