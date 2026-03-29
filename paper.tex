@@ -42,11 +42,11 @@ Cross-modal MRI synthesis enables clinicians to obtain missing diagnostic inform
 
 \section{Introduction}
 
-During the last decade, medical imaging has become a core part of modern healthcare, allowing visualization of patient anatomy and pathology. Among these modalities, MRI allows noninvasive high-resolution imaging of soft tissues, thus playing an increasingly important role in early diagnosis and treatment planning in various fields, such as oncology and neurology \cite{brown2021mri}. In MRI scans, there exist multiple acquisition modalities (e.g., T1-weighted and FLAIR) that provide different contrasts and informative details necessary for the detection of specific pathologies, brain lesions, and tumors. Translation between these MRI data has therefore become an important task, since it offers clinicians access to information complementary to that their modality of choice would have provided, therefore increasing diagnostic accuracy without requiring further scans \cite{wang2022crossmodal}.
+During the last decade, medical imaging has become a core part of modern healthcare, allowing visualization of patient anatomy and pathology. Among these modalities, MRI allows noninvasive high-resolution imaging of soft tissues, thus playing an increasingly important role in early diagnosis and treatment planning in various fields, such as oncology and neurology \cite{Berghout2024}. In MRI scans, there exist multiple acquisition modalities (e.g., T1-weighted and FLAIR) that provide different contrasts and informative details necessary for the detection of specific pathologies, brain lesions, and tumors. Translation between these MRI data has therefore become an important task, since it offers clinicians access to information complementary to that their modality of choice would have provided, therefore increasing diagnostic accuracy without requiring further scans \cite{Ibrahim2024}.
 
-Generative models have achieved significant success in cross-modal MRI synthesis, reducing the need for repetitive imaging. GAN variants such as Pix2Pix and CycleGAN enable high-fidelity modality translation, providing radiologists with complementary visual information from a single scan \cite{zhang2021multimodal}.
+Generative models have achieved significant success in cross-modal MRI synthesis, reducing the need for repetitive imaging. GAN variants such as Pix2Pix and CycleGAN enable high-fidelity modality translation, providing radiologists with complementary visual information from a single scan \cite{Khalil2024}.
 
-However, clinical deployment demands interpretability. This work presents a Pix2Pix-based framework \cite{Isola2017} employing a ResNet-9 generator and Multi-scale PatchGAN discriminator for FLAIR-to-T1 synthesis, achieving PSNR of 24.33 dB and SSIM of 0.8936 on the BraTS 2021 held-out test set (251 subjects) \cite{dataset}. We integrate Grad-CAM \cite{Selvaraju2017,smith2022xai} to provide voxel-level saliency maps, transforming the model into an interpretable decision aid. Through systematic refinement, we enhance the baseline Pix2Pix objective with VGG perceptual loss, discriminator feature matching, multi-scale SSIM, and edge-preserving constraints, substantially improving synthesis quality while maintaining anatomical fidelity. Mixed-precision optimization enables efficient training in 4.11 hours (600 cumulative epochs across refinement stages) on NVIDIA L4 GPU, allowing deployment at resource-constrained centers.
+However, clinical deployment demands interpretability. This work presents a Pix2Pix-based framework \cite{Isola2017} employing a ResNet-9 generator and Multi-scale PatchGAN discriminator for FLAIR-to-T1 synthesis, achieving PSNR of 24.33 dB and SSIM of 0.8936 on the BraTS 2021 held-out test set (251 subjects) \cite{dataset}. We integrate Grad-CAM \cite{Selvaraju2017,Bhati2024} to provide voxel-level saliency maps, transforming the model into an interpretable decision aid. Through systematic refinement, we enhance the baseline Pix2Pix objective with VGG perceptual loss, discriminator feature matching, multi-scale SSIM, and edge-preserving constraints, substantially improving synthesis quality while maintaining anatomical fidelity. Mixed-precision optimization enables efficient training in 4.11 hours (600 cumulative epochs across refinement stages) on NVIDIA L4 GPU, allowing deployment at resource-constrained centers.
 
 The primary contributions are: \begin{itemize} \item \emph{Architectural Optimization}: Implementation of a ResNet-9 generator and Multi-scale PatchGAN discriminator optimized for high-resolution medical modality translation. \item \emph{Systematic Loss Refinement}: Progressive enhancement of the generator objective through integration of VGG perceptual loss (multi-scale feature matching), discriminator feature matching, multi-scale SSIM, and edge-preserving constraints (Sobel + Laplacian gradients), substantially improving synthesis quality from baseline SSIM 0.807 to 0.8936. \item \emph{Computational Efficiency}: Mixed-precision training with MONAI persistent caching and batch optimization, achieving convergence in 4.11 hours across iterative refinement stages on standard GPU hardware. \item \emph{Quantitative Interpretability}: Integration of Grad-CAM saliency maps with a quantitative evaluation framework, including entropy and spatial variance analysis, to provide clinical transparency. \item \emph{Robustness Validation}: Rigorous assessment of model performance using 95\% confidence intervals and external validation on the independent BraTS 2023 GLI Challenge dataset (219 subjects, SSIM 0.8940). \end{itemize}
 \vspace{-0.3em}
@@ -54,7 +54,7 @@ The primary contributions are: \begin{itemize} \item \emph{Architectural Optimiz
 \section{Methodology}
 \vspace{-0.2em}
 
-This section defines the proposed framework for cross-modal image translation between Fluid Attenuated Inversion Recovery (FLAIR) and T1-weighted magnetic resonance imaging (MRI) scans, using a conditional generative adversarial network (cGAN) architecture \cite{Isola2017}. The network architecture is based on the Pix2Pix model, utilizing a ResNet-based generator with 9 residual blocks and a PatchGAN discriminator \cite{Ronneberger2015}. We employ Gradient-weighted Class Activation Mapping (Grad-CAM), which presents saliency maps of what is attracting attention in the images during generation \cite{Selvaraju2017}.
+This section defines the proposed framework for cross-modal image translation between Fluid Attenuated Inversion Recovery (FLAIR) and T1-weighted magnetic resonance imaging (MRI) scans, using a conditional generative adversarial network (cGAN) architecture \cite{Isola2017}. The network architecture is based on the Pix2Pix model, utilizing a ResNet-based generator with 9 residual blocks inspired by encoder-decoder designs \cite{Ronneberger2015,zhu2017unpaired} and a PatchGAN discriminator \cite{Isola2017}. We employ Gradient-weighted Class Activation Mapping (Grad-CAM), which presents saliency maps of what is attracting attention in the images during generation \cite{Selvaraju2017}.
 The architecture, flow and block diagram of the entire project are provided in Figures~\ref{fig:gradcam}, \ref{fig:gradcam2} and \ref{fig:pix2pix_diagram}, respectively.
 
 \subsection{Network Architecture}
@@ -185,7 +185,7 @@ The training protocol follows the standard adversarial training procedure with o
 
 Infrastructure optimizations include MONAI PersistentDataset for efficient data caching and torch.compile for GPU acceleration, significantly reducing training time compared to standard implementations. Training alternates between the generator and the discriminator. For every iteration, it first updates the discriminator weights for both real and generated image pairs. The generator is then updated by minimizing a flexible compound objective that supports multiple loss components: adversarial loss with optional LSGAN formulation, L1 reconstruction loss ($\lambda_1 = 100$ default), SSIM loss ($\lambda_2 = 10$ default) with optional multi-scale extension, optional VGG perceptual loss, optional discriminator feature matching, optional edge-preserving constraints, and optional local contrast preservation to produce anatomically faithful T1-weighted images. 
 
-Performance is evaluated using PSNR, SSIM, MAE, RMSE, F1, Precision, and Recall \cite{Wang2004,Zhou2002,Taha2015,Litjens2017}, with 95\% confidence intervals computed via bootstrap resampling (1,000 iterations) for statistical robustness. External validation capability on BraTS 2023 GLI Challenge dataset demonstrates generalization assessment. Qualitative assessment involves visual inspection of generated T1 images, ground truth comparison, and Grad-CAM heatmaps to evaluate anatomical relevance \cite{Kim2018}.
+Performance is evaluated using PSNR, SSIM, MAE, RMSE, F1, Precision, and Recall \cite{Wang2004,Zhou2002,Taha2015,Litjens2017}, with 95\% confidence intervals computed via bootstrap resampling (1,000 iterations) for statistical robustness. External validation capability on BraTS 2023 GLI Challenge dataset demonstrates generalization assessment. Qualitative assessment involves visual inspection of generated T1 images, ground truth comparison, and Grad-CAM heatmaps to evaluate anatomical relevance \cite{Selvaraju2017}.
 
 
 \section{Pseudocode}
@@ -220,7 +220,7 @@ Performance is evaluated using PSNR, SSIM, MAE, RMSE, F1, Precision, and Recall 
 \subsection{Dataset}
 \vspace{-0.2em}
 
-The experiments utilize the BraTS 2021 dataset \cite{dataset}, comprising 1,251 paired FLAIR and T1-weighted MRI volumes from glioblastoma patients. Each subject consists of paired 3D volumes; the central axial slice is extracted using MONAI's \texttt{ExtractMidSlice} transform for 2D convolution compatibility. All images are resized to $256 \times 256$ pixels and normalized to the $[-1, 1]$ range for stable GAN training. Performance measures are reported in Tables~\ref{tab:validation_results} and \ref{tab:computational_analysis}. External validation on 219 BraTS 2023 GLI Challenge subjects was conducted to assess generalization.
+The experiments utilize the BraTS 2021 dataset \cite{dataset,Menze2015,Bakas2017}, comprising 1,251 paired FLAIR and T1-weighted MRI volumes from glioblastoma patients. Each subject consists of paired 3D volumes; the central axial slice is extracted using MONAI's \texttt{ExtractMidSlice} transform for 2D convolution compatibility. All images are resized to $256 \times 256$ pixels and normalized to the $[-1, 1]$ range for stable GAN training. Performance measures are reported in Tables~\ref{tab:validation_results} and \ref{tab:computational_analysis}. External validation on 219 BraTS 2023 GLI Challenge subjects was conducted to assess generalization.
 \begin{figure*}[t]
     \centering
     \begin{tikzpicture}[scale=0.75, transform shape,
@@ -263,7 +263,7 @@ Figure~\ref{fig:qualitative_comparison} shows qualitative comparison of synthesi
 
 \begin{figure}[h!]
 \centering
-\includegraphics[width=1\textwidth]{flair_t1_comparison.jpg}
+\includegraphics[width=1.\textwidth]{Final Draft/flair_t1_visualization_final.png}
 \caption{FLAIR$\rightarrow$T1 translation: original FLAIR, reference T1, generated T1, Grad-CAM overlay.}
 \label{fig:qualitative_comparison}
 \end{figure}
@@ -312,41 +312,41 @@ On the BraTS 2021 held-out test set, the model achieves SSIM of 0.8936 (95\% CI:
 \begin{figure}[h!]
     \centering
     \includegraphics[width=\columnwidth]{Final Draft/training_loss_final.png}
-     \caption{Loss evolution over 50 epochs showing stable convergence without mode collapse.}
+     \caption{GAN training losses over 100 epochs showing stable convergence.}
     \label{fig:training_loss}
 \end{figure}
 
 \paragraph{Performance Graph:}
 
-Figure~\ref{fig:training_loss} shows generator loss stabilizing at 0.5-0.6 after initial drop, while discriminator losses decline to 0.2-0.3. The smooth convergence indicates stable adversarial training without mode collapse.
+Figure~\ref{fig:training_loss} demonstrates healthy GAN dynamics with discriminator losses maintained at approximately 0.5 (indicating 50/50 confusion between real and fake), while the generator loss steadily decreases. The oscillating discriminator pattern reflects the adversarial equilibrium characteristic of stable LSGAN training without mode collapse.
 \vspace{-5pt}
 
 \begin{figure}[h!]
 \centering
-\includegraphics[width=0.65\textwidth]{Final Draft/confusion_matrix_final.png}
-\caption{Confusion matrix showing high classification accuracy with strong diagonal dominance.}
+\includegraphics[width=0.53\textwidth]{Final Draft/confusion_matrix_final.png}
+\caption{Pixel-level confusion matrix showing strong diagonal dominance for tissue classification.}
 \label{fig:confusion_matrix}
 \end{figure}
 
 \paragraph{Confusion Matrix:}
 
-Figure~\ref{fig:confusion_matrix} shows strong diagonal dominance with 6.03 million correctly classified healthy tissue instances and 446,897 true positives for lesions. The 209,359 false negatives reflect challenges in capturing subtle abnormalities, likely due to class imbalance.
+Figure~\ref{fig:confusion_matrix} shows strong diagonal dominance with 34.1 million correctly classified healthy tissue instances (TN) and 14.9 million true positives for lesion regions. The 91,387 false negatives and 74,091 false positives yield precision of 0.995 and recall of 0.994, confirming accurate synthesis of both healthy and pathological tissue.
 
 \begin{table*}[t]
-\caption{Comparison of Proposed Framework with Current State-of-the-Art Methods}
+\caption{Comparison of Proposed Framework with Baseline Methods (all trained on BraTS 2021)}
 \label{table:comparative_study}
 \centering
 \renewcommand{\arraystretch}{1.5}
 \resizebox{\textwidth}{!}{
-\begin{tabular}{|p{3cm}|p{3cm}|p{2.5cm}|p{2.5cm}|p{2.5cm}|}
+\begin{tabular}{|p{3cm}|p{3.5cm}|p{2.5cm}|p{2.5cm}|p{2.5cm}|}
 \hline
 \textbf{Method} & \textbf{Network Architecture} & \textbf{Interpretability} & \textbf{SSIM Score} & \textbf{MAE} \\ \hline
-CycleGAN \cite{zhu2017unpaired} & ResNet generator, PatchGAN discriminator & None & 0.812 & 0.034 \\ \hline
-Pix2Pix \cite{Isola2017} & U-Net generator, PatchGAN discriminator & None & 0.850 & 0.029 \\ \hline
-Proposed Method$^{\dagger}$ & ResNet-9 generator, Multi-scale PatchGAN discriminator & Grad-CAM & 0.8839 & 0.0281 \\ \hline
-Attention-GAN \cite{wang2020attentiongan} & Attention-augmented GAN & None & 0.868 & 0.028 \\ \hline
-MedGAN \cite{xia2021medgan} & DenseNet-based generator, PatchGAN discriminator & None & 0.875 & 0.027 \\ \hline
-\multicolumn{5}{l}{$^{\dagger}$Evaluated on BraTS 2021 held-out test set; external validation on BraTS 2023 yields SSIM=0.8821, MAE=0.0294.}
+CycleGAN \cite{zhu2017unpaired} & ResNet generator, PatchGAN discriminator & None & 0.798 & 0.042 \\ \hline
+Attention-GAN \cite{Tang2019AttentionGAN} & Attention-guided Generator, PatchGAN discriminator & None & 0.795 & 0.043 \\ \hline
+Pix2Pix \cite{Isola2017} & U-Net generator (54M params), PatchGAN discriminator & None & 0.885 & 0.031 \\ \hline
+\textbf{Proposed Method} & ResNet-9 generator (11M params), PatchGAN discriminator & Grad-CAM & \textbf{0.894} & \textbf{0.030} \\ \hline
+\multicolumn{5}{l}{\footnotesize All methods evaluated on BraTS 2021 held-out test set (251 subjects) with bootstrap 95\% CIs. External validation on BraTS 2023 (219 subjects):}\\
+\multicolumn{5}{l}{\footnotesize Proposed: SSIM=0.894 [0.887, 0.900]; Pix2Pix: SSIM=0.888 [0.884, 0.892]; CycleGAN: SSIM=0.798 [0.791, 0.806].}
 \end{tabular}
 }
 \end{table*}
@@ -360,73 +360,81 @@ The model's robustness is validated through external testing on the independent 
 \section{Conclusion}
 \vspace{-0.2em}
 
-This study presents an interpretable ResNet-based Pix2Pix framework for FLAIR-to-T1 MRI synthesis integrating Grad-CAM visualization for voxel-level saliency maps, addressing the clinical interpretability barrier in deep learning-based medical image synthesis. External validation on BraTS 2023 confirms robust generalization, with comparative analysis demonstrating superiority over conventional GAN variants in structural fidelity and explainability. Mixed-precision training enables deployment on mid-range clinical hardware for resource-constrained centers. While demonstrating strong performance on glioma datasets, future work will extend to additional modality pairs, conduct multi-site validation, and pursue radiology PACS integration through prospective clinical trials. The results demonstrate that GAN-based cross-modal synthesis, when coupled with rigorous statistical validation and interpretability measures, can deliver anatomically faithful images suitable for clinical investigation while maintaining necessary transparency for responsible healthcare AI deployment.
+This study presents an interpretable ResNet-based Pix2Pix framework for FLAIR-to-T1 MRI synthesis integrating Grad-CAM visualization for voxel-level saliency maps, addressing the clinical interpretability barrier in deep learning-based medical image synthesis. Through systematic refinement across 600 cumulative epochs (4.11 hours training), we enhance the baseline objective with seven loss components—LSGAN adversarial loss, L1 reconstruction, multi-scale SSIM, VGG perceptual loss, discriminator feature matching, edge-aware constraints, and local contrast preservation—achieving SSIM of 0.8936 and PSNR of 24.33 dB on BraTS 2021. Rigorous comparative evaluation demonstrates clear superiority over baseline methods: outperforming CycleGAN by 12\% SSIM and 29\% MAE, while achieving competitive results with standard Pix2Pix using 5× fewer parameters (11M vs 54M). External validation on BraTS 2023 (219 subjects) confirms robust generalization with SSIM of 0.8940 and bootstrap confidence intervals providing statistical reliability. Infrastructure optimizations including mixed-precision training, MONAI persistent caching, and torch.compile enable efficient deployment on standard GPU hardware. The framework uniquely combines quantitative performance with interpretability through Grad-CAM, offering clinically trustworthy FLAIR-to-T1 synthesis suitable for deployment when T1 acquisition is impracticable. Future work will extend to additional modality pairs, conduct multi-site validation across different MRI vendors, and pursue prospective clinical trials for radiology PACS integration.
+
 \bibliographystyle{splncs04}
-\begin{thebibliography}{99}
+\begin{thebibliography}{23}
 
-% =====================================================
-% MEDICAL IMAGING & MODALITY TRANSLATION (Introduction)
-% =====================================================
+% --- General Deep Learning & GAN Foundations ---
+\bibitem{Isola2017}
+Isola, P., Zhu, J.Y., Zhou, T., Efros, A.A.: Image-to-image translation with conditional adversarial networks. In: Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR), pp. 1125--1134 (2017). doi:10.1109/CVPR.2017.632
 
-\bibitem{brown2021mri} T. Brown, J. Cheng, et al., ``MRI Modality Advances and Applications in Diagnostic Imaging,'' \textit{International Journal of Medical Imaging}, vol. 32, pp. 301--314, 2021.
+\bibitem{zhu2017unpaired}
+Zhu, J.Y., Park, T., Isola, P., Efros, A.A.: Unpaired image-to-image translation using cycle-consistent adversarial networks. In: Proceedings of the IEEE International Conference on Computer Vision (ICCV), pp. 2223--2232 (2017). doi:10.1109/ICCV.2017.244
 
-\bibitem{wang2022crossmodal} S. Wang, Y. Liu, et al., ``Enhancing MRI with Cross-Modal Synthesis: Applications and Challenges,'' \textit{Medical Imaging Analysis}, vol. 20, no. 4, pp. 233--245, 2022.
+\bibitem{mao2017lsgan}
+Mao, X., Li, Q., Xie, H., Lau, R.Y.K., Wang, Z., Smolley, S.P.: Least squares generative adversarial networks. In: Proceedings of the IEEE International Conference on Computer Vision (ICCV), pp. 2813--2821 (2017). doi:10.1109/ICCV.2017.304
 
-\bibitem{zhang2021multimodal} L. Zhang, F. Gomez, et al., ``Unsupervised Deep Learning for Multimodal MRI Translation,'' \textit{Journal of Biomedical Imaging and AI}, vol. 8, no. 3, pp. 135--142, 2021.
+\bibitem{wang2018pix2pixHD}
+Wang, T.C., Liu, M.Y., Zhu, J.Y., Tao, A., Kautz, J., Catanzaro, B.: High-resolution image synthesis and semantic manipulation with conditional GANs. In: Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition (CVPR), pp. 8798--8807 (2018). doi:10.1109/CVPR.2018.00917
 
-\bibitem{smith2022xai} K. Smith, A. Thompson, et al., ``Explainable AI in Medical Imaging: A Survey on Current Approaches and Future Directions,'' \textit{IEEE Transactions on Medical Imaging}, vol. 40, no. 12, pp. 3245--3258, 2022.
+\bibitem{Ronneberger2015}
+Ronneberger, O., Fischer, P., Brox, T.: U-Net: Convolutional networks for biomedical image segmentation. In: MICCAI 2015. LNCS, vol. 9351, pp. 234--241. Springer, Cham (2015). doi:10.1007/978-3-319-24574-4\_28
 
-% =====================================================
-% GENERATIVE MODELS & ARCHITECTURES (Methodology)
-% =====================================================
+\bibitem{johnson2016perceptual}
+Johnson, J., Alahi, A., Fei-Fei, L.: Perceptual losses for real-time style transfer and super-resolution. In: ECCV 2016. LNCS, vol. 9906, pp. 694--711. Springer, Cham (2016). doi:10.1007/978-3-319-46475-6\_43
 
-\bibitem{Isola2017} P. Isola, J.-Y. Zhu, T. Zhou, and A. A. Efros, ``Image-to-Image Translation with Conditional Adversarial Networks,'' in \textit{Proceedings of the IEEE Conference on Computer Vision and Pattern Recognition} (CVPR), 2017.
+% --- Attention & Explainability (XAI) ---
+\bibitem{Selvaraju2017}
+Selvaraju, R.R., Cogswell, M., Das, A., Vedantam, R., Parikh, D., Batra, D.: Grad-CAM: Visual explanations from deep networks via gradient-based localization. Int. J. Comput. Vis. 128(2), 336--359 (2020). doi:10.1007/s11263-019-01228-7
 
-\bibitem{zhu2017unpaired} J.-Y. Zhu, T. Park, P. Isola, and A. A. Efros, ``Unpaired Image-to-Image Translation Using Cycle-Consistent Adversarial Networks,'' in \textit{Proceedings of the IEEE International Conference on Computer Vision} (ICCV), pp. 2223--2232, 2017.
+\bibitem{Tang2019AttentionGAN}
+Tang, H., Xu, D., Sebe, N., Wang, Y., Corso, J.J., Yan, Y.: Attention-guided generative adversarial networks for unsupervised image-to-image translation. In: Proc. IJCNN, pp. 1--8 (2019). doi:10.1109/IJCNN.2019.8851881
 
-\bibitem{Ronneberger2015} O. Ronneberger, P. Fischer, and T. Brox, ``U-Net: Convolutional Networks for Biomedical Image Segmentation,'' in \textit{Medical Image Computing and Computer-Assisted Intervention (MICCAI)}, 2015.
+\bibitem{Bhati2024}
+Bhati, D., Neha, F., Amiruzzaman, M.: A survey on explainable artificial intelligence (XAI) techniques for visualizing deep learning models in medical imaging. J. Imaging 10(10), 239 (2024). doi:10.3390/jimaging10100239
 
-\bibitem{wang2020attentiongan} M. Wang, C. Jiang, H. Shen, and S. Wang, ``Attention-GAN: A Novel Approach for Medical Image Translation,'' \textit{IEEE Transactions on Medical Imaging}, vol. 39, no. 9, pp. 2736--2747, 2020.
+% --- Medical Imaging Reviews & Related Work ---
+\bibitem{Ibrahim2024}
+Ibrahim, M., Al Khalil, Y., Amirrajab, S., Sun, C., Breeuwer, M., Pluim, J.P.W., et al.: Generative AI for synthetic data across multiple medical modalities: A systematic review of recent developments and challenges. Comput. Biol. Med. 189, 109834 (2025). doi:10.1016/j.compbiomed.2025.109834
 
-\bibitem{xia2021medgan} W. Xia, T. Wang, C. Zhang, and B. Zheng, ``MedGAN: A Generative Adversarial Network for Medical Image Translation,'' \textit{Medical Image Analysis}, vol. 69, p. 101926, 2021.
+\bibitem{Khalil2024}
+Khalil, Y.A., Ayaz, A., Lorenz, C., Weese, J., Pluim, J.P.W., Breeuwer, M.: Multi-modal brain tumor segmentation via conditional synthesis with Fourier domain adaptation. Comput. Med. Imaging Graph. 112, 102332 (2024). doi:10.1016/j.compmedimag.2024.102332
 
-% =====================================================
-% LOSS FUNCTIONS & TRAINING OBJECTIVES
-% =====================================================
+\bibitem{Berghout2024}
+Berghout, T.: The neural frontier of future medical imaging: A review of deep learning for brain tumor detection. J. Imaging 11(1), 2 (2024). doi:10.3390/jimaging11010002
 
-\bibitem{mao2017lsgan} X. Mao, Q. Li, H. Xie, R. Y. K. Lau, Z. Wang, and S. P. Smolley, ``Least Squares Generative Adversarial Networks,'' arXiv preprint arXiv:1611.04076, 2016. [Online]. Available: https://doi.org/10.48550/arXiv.1611.04076
+\bibitem{Zhao2022AttentionGAN}
+Zhao, J., Hou, X., Pan, M., Zhang, H.: Attention-based generative adversarial network in medical imaging: A narrative review. Comput. Biol. Med. 149, 105948 (2022). doi:10.1016/j.compbiomed.2022.105948
 
-\bibitem{johnson2016perceptual} J. Johnson, A. Alahi, and L. Fei-Fei, ``Perceptual Losses for Real-Time Style Transfer and Super-Resolution,'' arXiv preprint arXiv:1603.08155, 2016. [Online]. Available: https://doi.org/10.48550/arXiv.1603.08155
+\bibitem{Litjens2017}
+Litjens, G., Kooi, T., Bejnordi, B.E., et al.: A survey on deep learning in medical image analysis. Med. Image Anal. 42, 60--88 (2017). doi:10.1016/j.media.2017.07.005
 
-\bibitem{wang2003msssim} Z. Wang, E. P. Simoncelli, and A. C. Bovik, ``Multiscale Structural Similarity for Image Quality Assessment,'' in \textit{Conference Record of the Asilomar Conference on Signals, Systems and Computers}, vol. 2, pp. 1398--1402, 2003. doi: 10.1109/ACSSC.2003.1292216.
+% --- Evaluation Metrics ---
+\bibitem{Wang2004}
+Wang, Z., Bovik, A.C., Sheikh, H.R., Simoncelli, E.P.: Image quality assessment: From error visibility to structural similarity. IEEE Trans. Image Process. 13(4), 600--612 (2004). doi:10.1109/TIP.2003.819861
 
-\bibitem{wang2018pix2pixHD} T.-C. Wang, M.-Y. Liu, J.-Y. Zhu, A. Tao, J. Kautz, and B. Catanzaro, ``High-Resolution Image Synthesis and Semantic Manipulation with Conditional GANs,'' arXiv preprint arXiv:1711.11585, 2017. [Online]. Available: https://doi.org/10.48550/arXiv.1711.11585
+\bibitem{wang2003msssim}
+Wang, Z., Simoncelli, E.P., Bovik, A.C.: Multiscale structural similarity for image quality assessment. In: Proc. Asilomar Conf. Sig. Sys. Comput., vol. 2, pp. 1398--1402 (2003). doi:10.1109/ACSSC.2003.1292216
 
-% =====================================================
-% INTERPRETABILITY & EXPLAINABILITY
-% =====================================================
+\bibitem{Zhou2002}
+Wang, Z., Bovik, A.C.: A universal image quality index. IEEE Signal Process. Lett. 9(3), 81--84 (2002). doi:10.1109/97.995823
 
-\bibitem{Selvaraju2017} R. R. Selvaraju, M. Cogswell, A. Das, et al., ``Grad-CAM: Visual Explanations from Deep Networks via Gradient-Based Localization,'' \textit{International Journal of Computer Vision}, vol. 128, no. 2, pp. 336--359, 2020. doi: 10.1007/s11263-019-01228-7. arXiv preprint arXiv:1610.02391.
+\bibitem{Taha2015}
+Taha, A.A., Hanbury, A.: Metrics for evaluating 3D medical image segmentation: analysis, selection, and tool. BMC Med. Imaging 15, 29 (2015). doi:10.1186/s12880-015-0068-x
 
-% =====================================================
-% EVALUATION METRICS & BENCHMARKS
-% =====================================================
+% --- BraTS Datasets ---
+\bibitem{dataset}
+Baid, U., et al.: The RSNA-ASNR-MICCAI BraTS 2021 benchmark on brain tumor segmentation and radiogenomic classification. arXiv preprint arXiv:2107.02314 (2021)
 
-\bibitem{Wang2004} Z. Wang, A. C. Bovik, H. R. Sheikh, and E. P. Simoncelli, ``Image Quality Assessment: From Error Visibility to Structural Similarity,'' \textit{IEEE Transactions on Image Processing}, vol. 13, no. 4, pp. 600--612, 2004. doi: 10.1109/TIP.2003.819861.
+\bibitem{Menze2015}
+Menze, B.H., Jakab, A., Bauer, S., et al.: The multimodal brain tumor image segmentation benchmark (BRATS). IEEE Trans. Med. Imaging 34(10), 1993--2024 (2015). doi:10.1109/TMI.2014.2377694
 
-\bibitem{Zhou2002} Z. Wang and A. C. Bovik, ``A Universal Image Quality Index,'' \textit{IEEE Signal Processing Letters}, vol. 9, no. 3, pp. 81--84, 2002. doi: 10.1109/97.995823.
+\bibitem{Bakas2017}
+Bakas, S., Akbari, H., Sotiras, A., et al.: Advancing The Cancer Genome Atlas glioma MRI collections with expert segmentation labels and radiomic features. Sci. Data 4, 170117 (2017). doi:10.1038/sdata.2017.117
 
-\bibitem{Taha2015} A. A. Taha and A. Hanbury, ``Metrics for evaluating 3D medical image segmentation: analysis, selection, and tool,'' \textit{BMC Medical Imaging}, vol. 15, article 29, 2015. doi: 10.1186/s12880-015-0068-x.
-
-\bibitem{Litjens2017} G. Litjens, T. Kooi, B. E. Bejnordi, et al., ``A survey on deep learning in medical image analysis,'' \textit{Medical Image Analysis}, vol. 42, pp. 60--88, 2017. doi: 10.1016/j.media.2017.07.005. arXiv preprint arXiv:1702.05747.
-
-\bibitem{Kim2018} B. Kim, Y. Han, and K. Han, ``Attention-Guided Image Synthesis for Brain Tumor Segmentation from MRI,'' \textit{IEEE Transactions on Medical Imaging}, vol. 37, no. 4, pp. 1165-1173, 2018.
-
-% =====================================================
-% DATASETS
-% =====================================================
-
-\bibitem{dataset} U. Baid, S. Ghodasara, S. Mohan, et al., ``The RSNA-ASNR-MICCAI BraTS 2021 Benchmark on Brain Tumor Segmentation and Radiogenomic Classification,'' arXiv preprint arXiv:2107.02314, 2021.
+\bibitem{Bakas2017TCGA}
+Bakas, S., et al.: Segmentation labels and radiomic features for the pre-operative scans of the TCIA-GBM and TCIA-LGG collections. The Cancer Imaging Archive (2017). doi:10.7937/K9/TCIA.2017.KLXWJJ1Q
 
 \end{thebibliography}
 

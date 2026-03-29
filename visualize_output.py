@@ -3,7 +3,6 @@ Visualize model output: FLAIR → T1 with Grad-CAM attention overlay
 Single data point visualization for paper figures.
 """
 import sys, os
-sys.path.insert(0, '/home/atchu2504/training')
 
 import torch
 import torch.nn.functional as F
@@ -16,11 +15,11 @@ from models import ResNet9Generator
 from dataset import create_dataloaders
 
 # ── config ───────────────────────────────────────────────────────────────────
-CHECKPOINT = '/home/atchu2504/outputs_backup/resnet9_v6/resnet9/checkpoints/best_model.pth'
-DATA_DIR   = '/home/atchu2504/training/data'
-CACHE_DIR  = '/home/atchu2504/training/cache'
-OUTPUT_DIR = '/home/atchu2504/final-paper-submission/outputs'
-device     = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+CHECKPOINT = 'outputs/resnet9_v6/resnet9/checkpoints/best_gen_weights.pth'  
+DATA_DIR   = 'data'  # Adjust this path to your BraTS dataset location
+CACHE_DIR  = 'cache'  # Local cache directory
+OUTPUT_DIR = '.'  # Current directory for outputs
+device     = torch.device('cpu')  # Use CPU as requested
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -54,7 +53,13 @@ gen  = ResNet9Generator(in_channels=3, out_channels=3).to(device)
 ckpt = torch.load(CHECKPOINT, map_location=device, weights_only=False)
 
 # torch.compile saves weights with '_orig_mod.' prefix — strip it
-state_dict = ckpt['gen']
+if 'gen' in ckpt:
+    state_dict = ckpt['gen']  # V6 checkpoint format
+elif 'model_state_dict' in ckpt:
+    state_dict = ckpt['model_state_dict']
+else:
+    state_dict = ckpt
+    
 if any(k.startswith('_orig_mod.') for k in state_dict.keys()):
     state_dict = {k.replace('_orig_mod.', ''): v for k, v in state_dict.items()}
 
