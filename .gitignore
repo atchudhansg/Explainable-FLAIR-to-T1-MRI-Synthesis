@@ -27,4 +27,5 @@ __pycache__/
 # ── Misc ──────────────────────────────────────────────────────
 nohup.out
 train_log.txt
+train_cyclegan_log.txt
 manifest_*.csv

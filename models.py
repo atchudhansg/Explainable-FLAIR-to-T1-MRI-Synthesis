@@ -200,6 +200,69 @@ class PatchGANDiscriminator(nn.Module):
 
 
 # ============================================================
+# CycleGAN: Standalone Discriminator (single-image input)
+# Per Zhu et al. 2017 (arXiv:1703.10593)
+# ============================================================
+
+class CycleGANDiscriminator(nn.Module):
+    """70x70 PatchGAN discriminator for CycleGAN.
+    Unlike Pix2Pix's PatchGAN, this takes a SINGLE image (not a pair).
+    Input: (B, 3, 256, 256) -> Output: (B, 1, 31, 31)
+    """
+    def __init__(self, in_channels=3):
+        super().__init__()
+        def block(in_c, out_c, stride=2, normalize=True):
+            layers = [nn.Conv2d(in_c, out_c, 4, stride=stride, padding=1)]
+            if normalize:
+                layers.append(nn.InstanceNorm2d(out_c))
+            layers.append(nn.LeakyReLU(0.2, inplace=True))
+            return layers
+
+        self.model = nn.Sequential(
+            *block(in_channels, 64, normalize=False),  # 256->128
+            *block(64, 128),                            # 128->64
+            *block(128, 256),                           # 64->32
+            *block(256, 512, stride=1),                 # 32->32
+            nn.Conv2d(512, 1, 4, stride=1, padding=1),  # 32->31
+        )
+
+    def forward(self, x):
+        return self.model(x)
+
+
+class ImageBuffer:
+    """Replay buffer of 50 previously generated images (CycleGAN paper, Sec 4).
+    Stabilizes discriminator training by mixing old and new fakes."""
+    def __init__(self, max_size=50):
+        self.max_size = max_size
+        self.data = []
+
+    def push_and_pop(self, images):
+        result = []
+        for img in images:
+            img = img.unsqueeze(0)
+            if len(self.data) < self.max_size:
+                self.data.append(img)
+                result.append(img)
+            elif torch.rand(1).item() > 0.5:
+                idx = torch.randint(0, self.max_size, (1,)).item()
+                result.append(self.data[idx].clone())
+                self.data[idx] = img
+            else:
+                result.append(img)
+        return torch.cat(result, dim=0)
+
+
+def get_cyclegan_models():
+    """Create CycleGAN model set: 2 generators + 2 discriminators."""
+    g_ab = ResNet9Generator()   # FLAIR -> T1
+    g_ba = ResNet9Generator()   # T1 -> FLAIR
+    d_a = CycleGANDiscriminator()  # discriminates FLAIR domain
+    d_b = CycleGANDiscriminator()  # discriminates T1 domain
+    return g_ab, g_ba, d_a, d_b
+
+
+# ============================================================
 # UTILITY
 # ============================================================
 
@@ -226,3 +289,9 @@ if __name__ == '__main__':
         pred = d(x, y)
         print(f"{name}: G={count_parameters(g)/1e6:.2f}M, D={count_parameters(d)/1e6:.2f}M, "
               f"out={y.shape}, disc={pred.shape}")
+    # CycleGAN
+    g_ab, g_ba, d_a, d_b = get_cyclegan_models()
+    x = torch.randn(1, 3, 256, 256)
+    y = g_ab(x)
+    print(f"CycleGAN: G_AB={count_parameters(g_ab)/1e6:.2f}M, G_BA={count_parameters(g_ba)/1e6:.2f}M, "
+          f"D_A={count_parameters(d_a)/1e6:.2f}M, D_B={count_parameters(d_b)/1e6:.2f}M")

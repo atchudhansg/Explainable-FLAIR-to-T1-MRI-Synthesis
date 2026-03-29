@@ -69,6 +69,88 @@ def perceptual_loss(vgg, fake, real):
         loss += nn.L1Loss()(ff, rf)
     return loss
 
+
+# ============================================================
+# EDGE-AWARE LOSS (Sobel + Laplacian)
+# Addresses: gyral fusion, gray-white boundary feathering,
+#            ventricular margin degradation
+# ============================================================
+
+class EdgeLoss(nn.Module):
+    """First-order (Sobel) + second-order (Laplacian) gradient matching.
+
+    Sobel captures tissue boundaries (gray-white junction, ventricular walls).
+    Laplacian captures ridges/valleys (sulci, narrow CSF channels).
+    Multi-scale: applies at original + 2x downsampled for coarse edges too.
+    """
+    def __init__(self):
+        super().__init__()
+        # Sobel kernels
+        sx = torch.tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]],
+                          dtype=torch.float32).view(1, 1, 3, 3)
+        sy = sx.transpose(2, 3)
+        # Laplacian kernel (detects ridges / zero-crossings)
+        lap = torch.tensor([[0, 1, 0], [1, -4, 1], [0, 1, 0]],
+                           dtype=torch.float32).view(1, 1, 3, 3)
+        self.register_buffer('sobel_x', sx)
+        self.register_buffer('sobel_y', sy)
+        self.register_buffer('laplacian', lap)
+
+    def _gradients(self, x):
+        gx = nn.functional.conv2d(x, self.sobel_x, padding=1)
+        gy = nn.functional.conv2d(x, self.sobel_y, padding=1)
+        lap = nn.functional.conv2d(x, self.laplacian, padding=1)
+        return gx, gy, lap
+
+    def forward(self, fake, real):
+        # Average to 1 channel (MRI is grayscale repeated across channels)
+        fake_1ch = fake.mean(dim=1, keepdim=True)
+        real_1ch = real.mean(dim=1, keepdim=True)
+        loss = 0
+        for scale in [1, 2]:
+            if scale > 1:
+                fake_1ch = nn.functional.avg_pool2d(fake_1ch, scale)
+                real_1ch = nn.functional.avg_pool2d(real_1ch, scale)
+            f_gx, f_gy, f_lap = self._gradients(fake_1ch)
+            r_gx, r_gy, r_lap = self._gradients(real_1ch)
+            loss += nn.functional.l1_loss(f_gx, r_gx)
+            loss += nn.functional.l1_loss(f_gy, r_gy)
+            loss += nn.functional.l1_loss(f_lap, r_lap)
+        return loss
+
+
+# ============================================================
+# LOCAL CONTRAST LOSS
+# Addresses: deep gray matter homogenization
+# Forces generator to match local texture variation
+# ============================================================
+
+class LocalContrastLoss(nn.Module):
+    """Penalizes differences in local standard deviation maps.
+
+    The generator tends to produce uniform-intensity blobs in deep structures
+    (thalamus, putamen, caudate). This loss forces it to preserve the subtle
+    internal texture variation visible in real T1 images.
+    """
+    def __init__(self, kernel_size=9):
+        super().__init__()
+        k = kernel_size
+        self.pad = k // 2
+        # Uniform averaging kernel
+        self.register_buffer('kernel',
+            torch.ones(1, 1, k, k) / (k * k))
+
+    def _local_std(self, x):
+        mu = nn.functional.conv2d(x, self.kernel, padding=self.pad)
+        var = nn.functional.conv2d((x - mu) ** 2, self.kernel, padding=self.pad)
+        return torch.sqrt(var + 1e-6)
+
+    def forward(self, fake, real):
+        return nn.functional.l1_loss(
+            self._local_std(fake.mean(dim=1, keepdim=True)),
+            self._local_std(real.mean(dim=1, keepdim=True)))
+
+
 # ============================================================
 # CONFIG
 # ============================================================
@@ -91,6 +173,10 @@ def parse_args():
                    help='Use LSGAN (MSE) loss instead of vanilla (BCE). More stable gradients.')
     p.add_argument('--ms_ssim', action='store_true',
                    help='Use Multi-Scale SSIM loss instead of single-scale. Better structural fidelity.')
+    p.add_argument('--lambda_edge', type=float, default=0.0,
+                   help='Edge-aware loss weight (Sobel+Laplacian). 0=off. Recommended: 20.0')
+    p.add_argument('--lambda_contrast', type=float, default=0.0,
+                   help='Local contrast loss weight. 0=off. Recommended: 5.0')
     p.add_argument('--lr_decay_start', type=int, default=-1,
                    help='Epoch to start linear LR decay. -1=no decay. Recommended: epochs//2')
     p.add_argument('--data_dir', type=str, default='/home/atchu2504/training/data')
@@ -213,10 +299,12 @@ def feature_matching_loss(disc, flair, fake_t1, t1_real):
 def train_one_epoch(gen, disc, train_loader, opt_g, opt_d, scaler_g, scaler_d,
                     criterion_gan, lambda_l1, lambda_ssim, device, epoch,
                     vgg=None, lambda_perceptual=0.0, lambda_feat=0.0,
-                    use_ms_ssim=False):
+                    use_ms_ssim=False, edge_loss_fn=None, lambda_edge=0.0,
+                    contrast_loss_fn=None, lambda_contrast=0.0):
     gen.train(); disc.train()
     metrics = {'g_loss': [], 'd_loss': [], 'g_adv': [], 'g_l1': [],
-               'g_ssim': [], 'g_percep': [], 'g_feat': []}
+               'g_ssim': [], 'g_percep': [], 'g_feat': [],
+               'g_edge': [], 'g_contrast': []}
 
     pbar = tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]", leave=False)
     for batch in pbar:
@@ -267,6 +355,18 @@ def train_one_epoch(gen, disc, train_loader, opt_g, opt_d, scaler_g, scaler_d,
                 loss_g_feat = feature_matching_loss(disc, flair, fake_t1, t1_real)
                 loss_g = loss_g + lambda_feat * loss_g_feat
 
+            # Edge-aware loss (Sobel + Laplacian) — sharp tissue boundaries
+            loss_g_edge = torch.tensor(0.0, device=device)
+            if edge_loss_fn is not None and lambda_edge > 0:
+                loss_g_edge = edge_loss_fn(fake_t1, t1_real)
+                loss_g = loss_g + lambda_edge * loss_g_edge
+
+            # Local contrast loss — preserve internal texture variation
+            loss_g_contrast = torch.tensor(0.0, device=device)
+            if contrast_loss_fn is not None and lambda_contrast > 0:
+                loss_g_contrast = contrast_loss_fn(fake_t1, t1_real)
+                loss_g = loss_g + lambda_contrast * loss_g_contrast
+
         scaler_g.scale(loss_g).backward()
         scaler_g.step(opt_g)
         scaler_g.update()
@@ -278,6 +378,8 @@ def train_one_epoch(gen, disc, train_loader, opt_g, opt_d, scaler_g, scaler_d,
         metrics['g_ssim'].append(loss_g_ssim.item())
         metrics['g_percep'].append(loss_g_percep.item())
         metrics['g_feat'].append(loss_g_feat.item())
+        metrics['g_edge'].append(loss_g_edge.item())
+        metrics['g_contrast'].append(loss_g_contrast.item())
 
         pbar.set_postfix(G=f"{loss_g.item():.4f}", D=f"{loss_d.item():.4f}")
 
@@ -344,7 +446,8 @@ def main():
         print(f"  VRAM: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB")
     print(f"  Epochs: {args.epochs}, Batch: {args.batch_size}, LR: {args.lr}")
     print(f"  Lambda L1: {args.lambda_l1}, Lambda SSIM: {args.lambda_ssim}, "
-          f"Lambda Perceptual: {args.lambda_perceptual}, Lambda Feat: {args.lambda_feat}")
+          f"Lambda Perceptual: {args.lambda_perceptual}, Lambda Feat: {args.lambda_feat}, "
+          f"Lambda Edge: {args.lambda_edge}, Lambda Contrast: {args.lambda_contrast}")
     if args.lr_decay_start >= 0:
         print(f"  LR Decay: linear decay from epoch {args.lr_decay_start}")
     print(f"{'='*60}\n")
@@ -413,6 +516,18 @@ def main():
         vgg.eval()
         print(f"  VGG19 loaded (frozen, {sum(p.numel() for p in vgg.parameters())/1e6:.1f}M params)\n")
 
+    # Edge-aware loss
+    edge_loss_fn = None
+    if args.lambda_edge > 0:
+        edge_loss_fn = EdgeLoss().to(device)
+        print(f"  Edge loss enabled (Sobel + Laplacian, multi-scale, lambda={args.lambda_edge})")
+
+    # Local contrast loss
+    contrast_loss_fn = None
+    if args.lambda_contrast > 0:
+        contrast_loss_fn = LocalContrastLoss(kernel_size=9).to(device)
+        print(f"  Local contrast loss enabled (9x9 window, lambda={args.lambda_contrast})")
+
     # LR scheduler — linear decay
     sched_g, sched_d = None, None
     if args.lr_decay_start >= 0:
@@ -427,6 +542,7 @@ def main():
     history = {
         'train_g_loss': [], 'train_d_loss': [],
         'train_g_adv': [], 'train_g_l1': [], 'train_g_ssim': [], 'train_g_percep': [], 'train_g_feat': [],
+        'train_g_edge': [], 'train_g_contrast': [],
         'val_psnr': [], 'val_ssim': [], 'val_mae': [], 'val_rmse': [],
         'val_mse': [], 'val_precision': [], 'val_recall': [], 'val_f1': [],
     }
@@ -472,7 +588,9 @@ def main():
             gen, disc, train_loader, opt_g, opt_d, scaler_g, scaler_d,
             criterion_gan, args.lambda_l1, args.lambda_ssim, device, epoch,
             vgg=vgg, lambda_perceptual=args.lambda_perceptual,
-            lambda_feat=args.lambda_feat, use_ms_ssim=args.ms_ssim
+            lambda_feat=args.lambda_feat, use_ms_ssim=args.ms_ssim,
+            edge_loss_fn=edge_loss_fn, lambda_edge=args.lambda_edge,
+            contrast_loss_fn=contrast_loss_fn, lambda_contrast=args.lambda_contrast
         )
 
         # LR scheduler step
@@ -487,7 +605,7 @@ def main():
         peak_mem = torch.cuda.max_memory_allocated() / 1e9
 
         # Log
-        for k in ['g_loss', 'd_loss', 'g_adv', 'g_l1', 'g_ssim', 'g_percep', 'g_feat']:
+        for k in ['g_loss', 'd_loss', 'g_adv', 'g_l1', 'g_ssim', 'g_percep', 'g_feat', 'g_edge', 'g_contrast']:
             history[f'train_{k}'].append(train_m[k])
         for k in ['psnr', 'ssim', 'mae', 'rmse', 'mse', 'precision', 'recall', 'f1']:
             history[f'val_{k}'].append(val_m[k])
@@ -498,6 +616,7 @@ def main():
             'G_adv': train_m['g_adv'], 'G_L1': train_m['g_l1'],
             'G_SSIM': train_m['g_ssim'], 'G_Percep': train_m['g_percep'],
             'G_Feat': train_m['g_feat'],
+            'G_Edge': train_m['g_edge'], 'G_Contrast': train_m['g_contrast'],
         }, epoch)
         writer.add_scalars('Metrics/Val', {
             'PSNR': val_m['psnr'], 'SSIM': val_m['ssim'],
@@ -513,7 +632,8 @@ def main():
         print(f"\nEpoch {epoch+1}/{args.epochs} ({epoch_time:.0f}s, GPU: {peak_mem:.2f}GB)")
         print(f"  Train: G={train_m['g_loss']:.4f} D={train_m['d_loss']:.4f} "
               f"Adv={train_m['g_adv']:.4f} L1={train_m['g_l1']:.4f} SSIM={train_m['g_ssim']:.4f}"
-              f" Percep={train_m['g_percep']:.4f} Feat={train_m['g_feat']:.4f}")
+              f" Percep={train_m['g_percep']:.4f} Feat={train_m['g_feat']:.4f}"
+              f" Edge={train_m['g_edge']:.4f} Ctr={train_m['g_contrast']:.4f}")
         print(f"  Val:   PSNR={val_m['psnr']:.2f} SSIM={val_m['ssim']:.4f} "
               f"MAE={val_m['mae']:.4f} RMSE={val_m['rmse']:.4f}")
         print(f"         P={val_m['precision']:.4f} R={val_m['recall']:.4f} F1={val_m['f1']:.4f}")
@@ -605,6 +725,8 @@ def main():
         'lambda_feat': args.lambda_feat,
         'lsgan': args.lsgan,
         'ms_ssim': args.ms_ssim,
+        'lambda_edge': args.lambda_edge,
+        'lambda_contrast': args.lambda_contrast,
         'lr_decay_start': args.lr_decay_start,
         'total_training_time_hours': total_time / 3600,
         'peak_gpu_memory_gb': peak_gpu,
@@ -648,6 +770,10 @@ def main():
         ax2.plot(epochs_x, history['train_g_percep'], label='Perceptual', linewidth=1.5)
     if any(v > 0 for v in history.get('train_g_feat', [])):
         ax2.plot(epochs_x, history['train_g_feat'], label='Feat Match', linewidth=1.5)
+    if any(v > 0 for v in history.get('train_g_edge', [])):
+        ax2.plot(epochs_x, history['train_g_edge'], label='Edge', linewidth=1.5)
+    if any(v > 0 for v in history.get('train_g_contrast', [])):
+        ax2.plot(epochs_x, history['train_g_contrast'], label='Contrast', linewidth=1.5)
     ax2.set_xlabel('Epoch'); ax2.set_ylabel('Loss'); ax2.set_title('Generator Loss Components')
     ax2.legend(); ax2.grid(True, alpha=0.3)
     plt.tight_layout()
