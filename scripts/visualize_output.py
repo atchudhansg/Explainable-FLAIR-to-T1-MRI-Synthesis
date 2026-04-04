@@ -2,7 +2,10 @@
 Visualize model output: FLAIR → T1 with Grad-CAM attention overlay
 Single data point visualization for paper figures.
 """
-import sys, os
+import os, sys
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT_DIR)
 
 import torch
 import torch.nn.functional as F
@@ -15,11 +18,11 @@ from models import ResNet9Generator
 from dataset import create_dataloaders
 
 # ── config ───────────────────────────────────────────────────────────────────
-CHECKPOINT = 'outputs/resnet9_v6/resnet9/checkpoints/best_gen_weights.pth'  
-DATA_DIR   = 'data'  # Adjust this path to your BraTS dataset location
-CACHE_DIR  = 'cache'  # Local cache directory
-OUTPUT_DIR = '.'  # Current directory for outputs
-device     = torch.device('cpu')  # Use CPU as requested
+CHECKPOINT = os.path.join(ROOT_DIR, 'outputs', 'resnet9_v6', 'resnet9', 'checkpoints', 'best_gen_weights.pth')
+DATA_DIR   = os.path.join(ROOT_DIR, 'data')
+CACHE_DIR  = os.path.join(ROOT_DIR, 'cache')
+OUTPUT_DIR = os.path.join(ROOT_DIR, 'outputs', 'samples')
+device     = torch.device('cpu')
 
 os.makedirs(OUTPUT_DIR, exist_ok=True)
 
@@ -128,7 +131,7 @@ plt.suptitle(
 plt.tight_layout()
 
 # ── save output ───────────────────────────────────────────────────────────────
-out_path = os.path.join(OUTPUT_DIR, 'flair_t1_visualization.png')
+out_path = os.path.join(OUTPUT_DIR, 'flair_t1_visualization_final.png')
 plt.savefig(out_path, dpi=300, bbox_inches='tight', facecolor='white')
 plt.close()
 print(f"✓ Saved → {out_path}")

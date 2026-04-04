@@ -1,19 +1,20 @@
 """
-AttentionGAN Training Pipeline — FLAIR <-> T1 MRI Synthesis
-Per Tang et al. 2019 (arXiv:1903.12296)
-Official implementation: https://github.com/Ha0Tang/AttentionGAN
+Official Pix2Pix Training Pipeline — FLAIR -> T1 MRI Synthesis
+Per Isola et al. 2017 (arXiv:1611.07004)
 
-Benchmark baseline for paper comparison.
-Key features:
-  - Attention-guided generators (content + attention masks)
-  - Cycle consistency loss (like CycleGAN)
-  - Identity loss
-  - Attention mechanism: out = content * attention + input * (1 - attention)
+Benchmark baseline using the ORIGINAL Pix2Pix architecture:
+  - U-Net Generator (with skip connections)
+  - PatchGAN Discriminator (70x70 receptive field)
+  - Adversarial + L1 reconstruction loss
+
+This is the VANILLA Pix2Pix for comparison, NOT our proposed ResNet-9 method.
 
 Usage:
-  python train_attentiongan.py --epochs 50 --batch_size 12
+  python train_pix2pix_official.py --epochs 50 --batch_size 12
 """
 import os, sys, json, time, argparse
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT_DIR)
 import numpy as np
 import torch
 import torch.nn as nn
@@ -25,7 +26,7 @@ import matplotlib.pyplot as plt
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from models import get_attentiongan_models, ImageBuffer, count_parameters
+from models import UNetGenerator, PatchGANDiscriminator, count_parameters
 from dataset import create_dataloaders, create_brats2023_loader
 
 
@@ -40,25 +41,19 @@ def parse_args():
     p.add_argument('--lr', type=float, default=2e-4)
     p.add_argument('--beta1', type=float, default=0.5)
     p.add_argument('--beta2', type=float, default=0.999)
-    p.add_argument('--lambda_cycle', type=float, default=10.0,
-                   help='Cycle consistency loss weight')
-    p.add_argument('--lambda_identity', type=float, default=5.0,
-                   help='Identity loss weight')
-    p.add_argument('--lr_decay_start', type=int, default=25,
-                   help='Epoch to start linear LR decay')
-    p.add_argument('--data_dir', type=str, default='/home/atchu2504/training/data')
-    p.add_argument('--output_dir', type=str, default='/home/atchu2504/training/outputs')
+    p.add_argument('--lambda_l1', type=float, default=100.0,
+                   help='L1 reconstruction loss weight (paper default: 100)')
+    p.add_argument('--data_dir', type=str, default=os.path.join(ROOT_DIR, 'data'))
+    p.add_argument('--output_dir', type=str, default=os.path.join(ROOT_DIR, 'outputs'))
     p.add_argument('--num_workers', type=int, default=4)
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--save_every', type=int, default=5)
     p.add_argument('--compile', action='store_true')
     p.add_argument('--cache_dir', type=str,
-                   default='/home/atchu2504/training/cache')
+                   default=os.path.join(ROOT_DIR, 'cache'))
     p.add_argument('--external_val_dir', type=str,
-                   default='/home/atchu2504/training/validation')
+                   default=os.path.join(ROOT_DIR, 'validation'))
     p.add_argument('--skip_external_val', action='store_true')
-    p.add_argument('--simple', action='store_true', default=True,
-                   help='Use simplified single-attention generator (default: True)')
     return p.parse_args()
 
 
@@ -85,67 +80,54 @@ def bootstrap_ci(values, n_boot=1000, ci=0.95):
 
 
 # ============================================================
-# ATTENTIONGAN TRAINING
+# PIX2PIX TRAINING (Official: Adversarial + L1)
 # ============================================================
 
-def train_one_epoch(g_ab, g_ba, d_a, d_b, train_loader, opt_g, opt_d,
-                    scaler_g, scaler_d, lambda_cycle, lambda_identity,
-                    device, epoch, buf_a, buf_b):
-    """AttentionGAN training: cycle consistency + identity + adversarial."""
-    g_ab.train(); g_ba.train(); d_a.train(); d_b.train()
-    criterion = nn.MSELoss()  # LSGAN
-    l1 = nn.L1Loss()
+def train_one_epoch(gen, disc, train_loader, opt_g, opt_d,
+                    scaler_g, scaler_d, lambda_l1, device, epoch):
+    """Official Pix2Pix training: Adversarial + L1 reconstruction."""
+    gen.train()
+    disc.train()
+    criterion_gan = nn.BCEWithLogitsLoss()
+    criterion_l1 = nn.L1Loss()
 
-    metrics = {'g_loss': [], 'd_loss': [], 'cycle': [], 'identity': [],
-               'adv_ab': [], 'adv_ba': []}
+    metrics = {'g_loss': [], 'd_loss': [], 'g_adv': [], 'g_l1': []}
 
     pbar = tqdm(train_loader, desc=f"Epoch {epoch+1} [Train]", leave=False)
     for batch in pbar:
-        real_a = batch['image'].to(device, non_blocking=True)  # FLAIR
-        real_b = batch['label'].to(device, non_blocking=True)  # T1
+        real_flair = batch['image'].to(device, non_blocking=True)
+        real_t1 = batch['label'].to(device, non_blocking=True)
 
-        # ── Generators ──────────────────────────────────────
+        # ── Generator ──────────────────────────────────────────
         opt_g.zero_grad(set_to_none=True)
         with torch.amp.autocast('cuda'):
-            # Identity loss
-            loss_idt = torch.tensor(0.0, device=device)
-            if lambda_identity > 0:
-                idt_b = g_ab(real_b)
-                idt_a = g_ba(real_a)
-                loss_idt = (l1(idt_b, real_b) + l1(idt_a, real_a)) * lambda_identity
+            fake_t1 = gen(real_flair)
 
-            # GAN loss
-            fake_b = g_ab(real_a)  # FLAIR -> fake T1
-            pred_fake_b = d_b(fake_b)
-            loss_gan_ab = criterion(pred_fake_b, torch.ones_like(pred_fake_b))
+            # Adversarial loss
+            pred_fake = disc(real_flair, fake_t1)
+            loss_g_adv = criterion_gan(pred_fake, torch.ones_like(pred_fake))
 
-            fake_a = g_ba(real_b)  # T1 -> fake FLAIR
-            pred_fake_a = d_a(fake_a)
-            loss_gan_ba = criterion(pred_fake_a, torch.ones_like(pred_fake_a))
+            # L1 reconstruction loss
+            loss_g_l1 = criterion_l1(fake_t1, real_t1) * lambda_l1
 
-            # Cycle consistency
-            recon_a = g_ba(fake_b)
-            recon_b = g_ab(fake_a)
-            loss_cycle = (l1(recon_a, real_a) + l1(recon_b, real_b)) * lambda_cycle
-
-            loss_g = loss_gan_ab + loss_gan_ba + loss_cycle + loss_idt
+            loss_g = loss_g_adv + loss_g_l1
 
         scaler_g.scale(loss_g).backward()
         scaler_g.step(opt_g)
         scaler_g.update()
 
-        # ── Discriminators ───────────────────────────────────
+        # ── Discriminator ──────────────────────────────────────
         opt_d.zero_grad(set_to_none=True)
         with torch.amp.autocast('cuda'):
-            fake_a_buf = buf_a.push_and_pop(fake_a.detach())
-            loss_d_a = (criterion(d_a(real_a), torch.ones_like(d_a(real_a))) +
-                        criterion(d_a(fake_a_buf), torch.zeros_like(d_a(fake_a_buf)))) * 0.5
+            # Real pairs
+            pred_real = disc(real_flair, real_t1)
+            loss_d_real = criterion_gan(pred_real, torch.ones_like(pred_real))
 
-            fake_b_buf = buf_b.push_and_pop(fake_b.detach())
-            loss_d_b = (criterion(d_b(real_b), torch.ones_like(d_b(real_b))) +
-                        criterion(d_b(fake_b_buf), torch.zeros_like(d_b(fake_b_buf)))) * 0.5
+            # Fake pairs (detached)
+            pred_fake = disc(real_flair, fake_t1.detach())
+            loss_d_fake = criterion_gan(pred_fake, torch.zeros_like(pred_fake))
 
-            loss_d = loss_d_a + loss_d_b
+            loss_d = (loss_d_real + loss_d_fake) * 0.5
 
         scaler_d.scale(loss_d).backward()
         scaler_d.step(opt_d)
@@ -153,10 +135,8 @@ def train_one_epoch(g_ab, g_ba, d_a, d_b, train_loader, opt_g, opt_d,
 
         metrics['g_loss'].append(loss_g.item())
         metrics['d_loss'].append(loss_d.item())
-        metrics['cycle'].append(loss_cycle.item())
-        metrics['identity'].append(loss_idt.item())
-        metrics['adv_ab'].append(loss_gan_ab.item())
-        metrics['adv_ba'].append(loss_gan_ba.item())
+        metrics['g_adv'].append(loss_g_adv.item())
+        metrics['g_l1'].append(loss_g_l1.item())
 
         pbar.set_postfix(G=f"{loss_g.item():.3f}", D=f"{loss_d.item():.3f}")
 
@@ -165,7 +145,7 @@ def train_one_epoch(g_ab, g_ba, d_a, d_b, train_loader, opt_g, opt_d,
 
 @torch.no_grad()
 def validate(gen, val_loader, device):
-    """Validate G_AB (FLAIR->T1) — SSIM and MAE only for benchmark."""
+    """Validate generator — SSIM and MAE only for benchmark."""
     gen.eval()
     all_ssim, all_mae = [], []
 
@@ -199,18 +179,17 @@ def main():
     torch.backends.cudnn.allow_tf32 = True
 
     print(f"\n{'='*60}")
-    print(f"  AttentionGAN: FLAIR <-> T1 Synthesis")
-    print(f"  Per Tang et al. 2019 (arXiv:1903.12296)")
+    print(f"  Official Pix2Pix: FLAIR -> T1 Synthesis")
+    print(f"  Architecture: U-Net Generator + PatchGAN Discriminator")
     print(f"  Device: {device} ({torch.cuda.get_device_name(0)})")
     if torch.cuda.is_available():
         print(f"  VRAM: {torch.cuda.get_device_properties(0).total_memory/1e9:.1f} GB")
     print(f"  Epochs: {args.epochs}, Batch: {args.batch_size}, LR: {args.lr}")
-    print(f"  Lambda Cycle: {args.lambda_cycle}, Lambda Identity: {args.lambda_identity}")
-    print(f"  Generator: {'Simple (single attention)' if args.simple else 'Full (multi-attention)'}")
+    print(f"  Lambda L1: {args.lambda_l1}")
     print(f"{'='*60}\n")
 
     # Output dirs
-    run_dir = os.path.join(args.output_dir, 'attentiongan')
+    run_dir = os.path.join(args.output_dir, 'pix2pix_official')
     os.makedirs(os.path.join(run_dir, 'checkpoints'), exist_ok=True)
     os.makedirs(os.path.join(run_dir, 'plots'), exist_ok=True)
     os.makedirs(os.path.join(run_dir, 'samples'), exist_ok=True)
@@ -224,57 +203,31 @@ def main():
         num_workers=args.num_workers, cache_dir=cache_dir
     )
 
-    # Models
-    g_ab, g_ba, d_a, d_b = get_attentiongan_models(simple=args.simple)
-    g_ab, g_ba = g_ab.to(device), g_ba.to(device)
-    d_a, d_b = d_a.to(device), d_b.to(device)
+    # Models (Official Pix2Pix architecture)
+    gen = UNetGenerator(in_channels=3, out_channels=3).to(device)
+    disc = PatchGANDiscriminator(in_channels=6).to(device)  # 6 = concat(FLAIR, T1)
 
-    print(f"G_AB (Attention) params: {count_parameters(g_ab)/1e6:.2f}M")
-    print(f"G_BA (Attention) params: {count_parameters(g_ba)/1e6:.2f}M")
-    print(f"D_A params: {count_parameters(d_a)/1e6:.2f}M")
-    print(f"D_B params: {count_parameters(d_b)/1e6:.2f}M")
-    print(f"Total: {(count_parameters(g_ab)+count_parameters(g_ba)+count_parameters(d_a)+count_parameters(d_b))/1e6:.2f}M\n")
+    print(f"Generator (U-Net) params: {count_parameters(gen)/1e6:.2f}M")
+    print(f"Discriminator (PatchGAN) params: {count_parameters(disc)/1e6:.2f}M")
+    print(f"Total: {(count_parameters(gen)+count_parameters(disc))/1e6:.2f}M\n")
 
     if args.compile:
         print("  Compiling models with torch.compile...")
-        g_ab = torch.compile(g_ab)
-        g_ba = torch.compile(g_ba)
-        d_a = torch.compile(d_a)
-        d_b = torch.compile(d_b)
+        gen = torch.compile(gen)
+        disc = torch.compile(disc)
         print("  Compilation ready.\n")
 
-    # Optimizers
-    import itertools
-    opt_g = torch.optim.Adam(
-        itertools.chain(g_ab.parameters(), g_ba.parameters()),
-        lr=args.lr, betas=(args.beta1, args.beta2))
-    opt_d = torch.optim.Adam(
-        itertools.chain(d_a.parameters(), d_b.parameters()),
-        lr=args.lr, betas=(args.beta1, args.beta2))
+    # Optimizers (separate, per Pix2Pix paper)
+    opt_g = torch.optim.Adam(gen.parameters(), lr=args.lr, betas=(args.beta1, args.beta2))
+    opt_d = torch.optim.Adam(disc.parameters(), lr=args.lr, betas=(args.beta1, args.beta2))
 
     scaler_g = GradScaler('cuda')
     scaler_d = GradScaler('cuda')
 
-    # Image replay buffers
-    buf_a = ImageBuffer(max_size=50)
-    buf_b = ImageBuffer(max_size=50)
-
-    # LR scheduler
-    def lr_lambda(epoch):
-        if epoch < args.lr_decay_start:
-            return 1.0
-        decay_epochs = args.epochs - args.lr_decay_start
-        if decay_epochs <= 0:
-            return 1.0
-        return max(0.0, 1.0 - (epoch - args.lr_decay_start) / decay_epochs)
-    sched_g = torch.optim.lr_scheduler.LambdaLR(opt_g, lr_lambda)
-    sched_d = torch.optim.lr_scheduler.LambdaLR(opt_d, lr_lambda)
-
     # History
     history = {
         'train_g_loss': [], 'train_d_loss': [],
-        'train_cycle': [], 'train_identity': [],
-        'train_adv_ab': [], 'train_adv_ba': [],
+        'train_g_adv': [], 'train_g_l1': [],
         'val_ssim': [], 'val_mae': [],
     }
 
@@ -286,21 +239,18 @@ def main():
         epoch_start = time.time()
 
         train_m = train_one_epoch(
-            g_ab, g_ba, d_a, d_b, train_loader, opt_g, opt_d,
-            scaler_g, scaler_d, args.lambda_cycle, args.lambda_identity,
-            device, epoch, buf_a, buf_b
+            gen, disc, train_loader, opt_g, opt_d,
+            scaler_g, scaler_d, args.lambda_l1, device, epoch
         )
 
-        sched_g.step()
-        sched_d.step()
-
-        val_m = validate(g_ab, val_loader, device)
+        # Validate
+        val_m = validate(gen, val_loader, device)
 
         epoch_time = time.time() - epoch_start
         peak_mem = torch.cuda.max_memory_allocated() / 1e9
 
         # Log history
-        for k in ['g_loss', 'd_loss', 'cycle', 'identity', 'adv_ab', 'adv_ba']:
+        for k in ['g_loss', 'd_loss', 'g_adv', 'g_l1']:
             history[f'train_{k}'].append(train_m[k])
         for k in ['ssim', 'mae']:
             history[f'val_{k}'].append(val_m[k])
@@ -308,24 +258,24 @@ def main():
         # TensorBoard
         writer.add_scalars('Loss/Train', {
             'G_total': train_m['g_loss'], 'D': train_m['d_loss'],
-            'Cycle': train_m['cycle'], 'Identity': train_m['identity'],
+            'G_adv': train_m['g_adv'], 'G_L1': train_m['g_l1'],
         }, epoch)
         writer.add_scalars('Metrics/Val', {
             'SSIM': val_m['ssim'], 'MAE': val_m['mae'],
         }, epoch)
         writer.add_scalar('System/PeakGPU_GB', peak_mem, epoch)
+        writer.add_scalar('System/EpochTime_s', epoch_time, epoch)
 
         print(f"\nEpoch {epoch+1}/{args.epochs} ({epoch_time:.0f}s, GPU: {peak_mem:.2f}GB)")
         print(f"  Train: G={train_m['g_loss']:.4f} D={train_m['d_loss']:.4f} "
-              f"Cycle={train_m['cycle']:.4f} Idt={train_m['identity']:.4f}")
+              f"Adv={train_m['g_adv']:.4f} L1={train_m['g_l1']:.4f}")
         print(f"  Val:   ★ SSIM={val_m['ssim']:.4f} MAE={val_m['mae']:.4f} ★")
 
-        # Save best
+        # Save best (based on SSIM)
         if val_m['ssim'] > best_ssim:
             best_ssim = val_m['ssim']
             torch.save({
-                'epoch': epoch, 'g_ab': g_ab.state_dict(), 'g_ba': g_ba.state_dict(),
-                'd_a': d_a.state_dict(), 'd_b': d_b.state_dict(),
+                'epoch': epoch, 'gen': gen.state_dict(), 'disc': disc.state_dict(),
                 'opt_g': opt_g.state_dict(), 'opt_d': opt_d.state_dict(),
                 'best_ssim': best_ssim,
             }, os.path.join(run_dir, 'checkpoints', 'best_model.pth'))
@@ -334,19 +284,18 @@ def main():
         # Periodic checkpoint
         if (epoch + 1) % args.save_every == 0:
             torch.save({
-                'epoch': epoch, 'g_ab': g_ab.state_dict(), 'g_ba': g_ba.state_dict(),
-                'd_a': d_a.state_dict(), 'd_b': d_b.state_dict(),
+                'epoch': epoch, 'gen': gen.state_dict(), 'disc': disc.state_dict(),
             }, os.path.join(run_dir, 'checkpoints', f'epoch_{epoch+1}.pth'))
 
-        # Save samples every 5 epochs
+        # Save sample images every 5 epochs
         if (epoch + 1) % 5 == 0:
-            g_ab.eval()
+            gen.eval()
             with torch.no_grad():
                 sample_batch = next(iter(val_loader))
                 s_flair = sample_batch['image'][:4].to(device)
                 s_t1 = sample_batch['label'][:4].to(device)
                 with torch.amp.autocast('cuda'):
-                    s_fake = g_ab(s_flair)
+                    s_fake = gen(s_flair)
                 fig, axes = plt.subplots(3, 4, figsize=(16, 12))
                 for i in range(min(4, s_flair.shape[0])):
                     axes[0, i].imshow(s_flair[i, 0].cpu().numpy(), cmap='gray')
@@ -365,10 +314,10 @@ def main():
     # ============================================================
     # FINAL REPORT
     # ============================================================
-    final_val = validate(g_ab, val_loader, device)
+    final_val = validate(gen, val_loader, device)
 
     print(f"\n{'='*80}")
-    print(f"  ★★★ ATTENTIONGAN BENCHMARK RESULTS (for paper comparison) ★★★")
+    print(f"  ★★★ OFFICIAL PIX2PIX BENCHMARK RESULTS (for paper comparison) ★★★")
     print(f"{'='*80}")
 
     ci_results = {}
@@ -384,20 +333,16 @@ def main():
 
     # Save report JSON
     report = {
-        'model': 'attentiongan',
-        'architecture': 'Attention-guided Generator + PatchGAN Discriminator',
-        'simple_generator': args.simple,
+        'model': 'pix2pix_official',
+        'architecture': 'U-Net Generator + PatchGAN Discriminator',
         'epochs': args.epochs,
         'batch_size': args.batch_size,
         'lr': args.lr,
-        'lambda_cycle': args.lambda_cycle,
-        'lambda_identity': args.lambda_identity,
+        'lambda_l1': args.lambda_l1,
         'total_training_time_hours': total_time / 3600,
         'peak_gpu_memory_gb': peak_gpu,
-        'g_ab_params_M': count_parameters(g_ab) / 1e6,
-        'g_ba_params_M': count_parameters(g_ba) / 1e6,
-        'd_a_params_M': count_parameters(d_a) / 1e6,
-        'd_b_params_M': count_parameters(d_b) / 1e6,
+        'gen_params_M': count_parameters(gen) / 1e6,
+        'disc_params_M': count_parameters(disc) / 1e6,
         'best_ssim': best_ssim,
         'final_metrics': {
             'ssim': final_val['ssim'],
@@ -416,21 +361,21 @@ def main():
     plot_dir = os.path.join(run_dir, 'plots')
     epochs_x = range(1, args.epochs + 1)
 
-    # Loss curves
+    # 1. Loss curves
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
     ax1.plot(epochs_x, history['train_g_loss'], label='Generator', linewidth=2)
     ax1.plot(epochs_x, history['train_d_loss'], label='Discriminator', linewidth=2)
-    ax1.set_xlabel('Epoch'); ax1.set_ylabel('Loss'); ax1.set_title('AttentionGAN Training Loss')
+    ax1.set_xlabel('Epoch'); ax1.set_ylabel('Loss'); ax1.set_title('Pix2Pix Training Loss')
     ax1.legend(); ax1.grid(True, alpha=0.3)
-    ax2.plot(epochs_x, history['train_cycle'], label='Cycle', linewidth=1.5)
-    ax2.plot(epochs_x, history['train_identity'], label='Identity', linewidth=1.5)
+    ax2.plot(epochs_x, history['train_g_adv'], label='Adversarial', linewidth=1.5)
+    ax2.plot(epochs_x, history['train_g_l1'], label='L1 Recon', linewidth=1.5)
     ax2.set_xlabel('Epoch'); ax2.set_ylabel('Loss'); ax2.set_title('Generator Loss Components')
     ax2.legend(); ax2.grid(True, alpha=0.3)
     plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, 'loss_curves.png'), dpi=200)
     plt.close()
 
-    # Validation metrics
+    # 2. Validation metrics (SSIM & MAE)
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 5))
     ax1.plot(epochs_x, history['val_ssim'], linewidth=2, color='#FF5722')
     ax1.set_xlabel('Epoch'); ax1.set_ylabel('SSIM'); ax1.set_title('SSIM')
@@ -453,7 +398,7 @@ def main():
             ext_loader = create_brats2023_loader(
                 args.external_val_dir, batch_size=args.batch_size,
                 num_workers=args.num_workers)
-            ext_val = validate(g_ab, ext_loader, device)
+            ext_val = validate(gen, ext_loader, device)
 
             ext_ci = {}
             for metric_name, values in [
@@ -463,7 +408,7 @@ def main():
                 ext_ci[metric_name] = {'mean': mean, 'ci_low': lo, 'ci_high': hi}
                 print(f"  ★ {metric_name}: {mean:.4f} [{lo:.4f}, {hi:.4f}]")
 
-            print(f"  Subjects: {len(ext_loader.dataset)}")
+            print(f"  Subjects:  {len(ext_loader.dataset)}")
 
             report['external_validation_brats2023'] = {
                 'n_subjects': len(ext_loader.dataset),
@@ -476,13 +421,13 @@ def main():
         except Exception as e:
             print(f"  WARNING: External validation failed — {e}")
 
-    # Export clean G_AB weights
+    # Export clean generator weights
     best_ckpt = torch.load(os.path.join(run_dir, 'checkpoints', 'best_model.pth'),
                            map_location='cpu', weights_only=False)
-    gen_sd = {k.replace('_orig_mod.', ''): v for k, v in best_ckpt['g_ab'].items()}
+    gen_sd = {k.replace('_orig_mod.', ''): v for k, v in best_ckpt['gen'].items()}
     torch.save({'gen': gen_sd, 'epoch': best_ckpt['epoch'], 'best_ssim': best_ckpt['best_ssim']},
                os.path.join(run_dir, 'checkpoints', 'best_gen_weights.pth'))
-    print(f"\nClean G_AB weights exported to {run_dir}/checkpoints/best_gen_weights.pth")
+    print(f"\nClean generator weights exported to {run_dir}/checkpoints/best_gen_weights.pth")
 
     writer.close()
     print(f"\nAll plots saved to {plot_dir}/")

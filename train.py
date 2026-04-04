@@ -179,8 +179,8 @@ def parse_args():
                    help='Local contrast loss weight. 0=off. Recommended: 5.0')
     p.add_argument('--lr_decay_start', type=int, default=-1,
                    help='Epoch to start linear LR decay. -1=no decay. Recommended: epochs//2')
-    p.add_argument('--data_dir', type=str, default='/home/atchu2504/training/data')
-    p.add_argument('--output_dir', type=str, default='/home/atchu2504/training/outputs')
+    p.add_argument('--data_dir', type=str, default='data')
+    p.add_argument('--output_dir', type=str, default='outputs')
     p.add_argument('--num_workers', type=int, default=4)
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--save_every', type=int, default=5)
@@ -196,11 +196,11 @@ def parse_args():
                         'Starts fresh epoch count. Use with a new --output_dir for v3 etc.')
     # PersistentDataset cache (big speedup from epoch 2 onward)
     p.add_argument('--cache_dir', type=str,
-                   default='/home/atchu2504/training/cache',
+                   default='cache',
                    help='Directory for MONAI PersistentDataset cache. Set to "" to disable.')
     # BraTS 2023 external validation (separate from internal BraTS 2021 val split)
     p.add_argument('--external_val_dir', type=str,
-                   default='/home/atchu2504/training/validation',
+                   default='validation',
                    help='Path to BraTS 2023 GLI Challenge data for external validation')
     p.add_argument('--skip_external_val', action='store_true',
                    help='Skip external BraTS 2023 validation')
@@ -806,7 +806,7 @@ def main():
                     fontsize=12, color='white' if cm[i, j] > cm.max()/2 else 'black')
     ax.set_title('Confusion Matrix (Pixel-level)')
     plt.colorbar(im); plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, 'confusion_matrix.png'), dpi=200)
+    plt.savefig(os.path.join(plot_dir, 'confusion_matrix_final.png'), dpi=200)
     plt.close()
 
     # 4. Precision/Recall/F1 over epochs

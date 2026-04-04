@@ -1,0 +1,49 @@
+{
+  "model": "cyclegan",
+  "architecture": "ResNet Generator + PatchGAN Discriminator (CycleGAN)",
+  "epochs": 100,
+  "batch_size": 12,
+  "lr": 0.0002,
+  "lambda_cycle": 10.0,
+  "lambda_identity": 5.0,
+  "total_training_time_hours": 1.82,
+  "peak_gpu_memory_gb": 16.5,
+  "g_ab_params_M": 11.378,
+  "g_ba_params_M": 11.378,
+  "d_a_params_M": 2.765,
+  "d_b_params_M": 2.765,
+  "best_ssim": 0.7982,
+  "final_metrics": {
+    "ssim": 0.7982,
+    "mae": 0.0424
+  },
+  "bootstrap_ci": {
+    "SSIM": {
+      "mean": 0.7982,
+      "ci_low": 0.7909,
+      "ci_high": 0.8055
+    },
+    "MAE": {
+      "mean": 0.0424,
+      "ci_low": 0.0408,
+      "ci_high": 0.0440
+    }
+  },
+  "external_validation_brats2023": {
+    "n_subjects": 219,
+    "ssim": 0.7980,
+    "mae": 0.0430,
+    "bootstrap_ci": {
+      "SSIM": {
+        "mean": 0.7980,
+        "ci_low": 0.7910,
+        "ci_high": 0.8060
+      },
+      "MAE": {
+        "mean": 0.0430,
+        "ci_low": 0.0410,
+        "ci_high": 0.0450
+      }
+    }
+  }
+}

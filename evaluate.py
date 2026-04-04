@@ -26,13 +26,13 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('--model', type=str, default='resnet9', choices=['resnet9', 'unet'])
     p.add_argument('--checkpoint', type=str, default='')
-    p.add_argument('--data_dir', type=str, default='/home/atchu2504/training/data')
-    p.add_argument('--output_dir', type=str, default='/home/atchu2504/training/outputs')
+    p.add_argument('--data_dir', type=str, default='data')
+    p.add_argument('--output_dir', type=str, default='outputs')
     p.add_argument('--compare', action='store_true', help='Run comparative study')
     p.add_argument('--external_val', action='store_true',
                    help='Run external validation on BraTS 2023')
     p.add_argument('--external_val_dir', type=str,
-                   default='/home/atchu2504/training/validation',
+                   default='validation',
                    help='Path to BraTS 2023 GLI Challenge data')
     p.add_argument('--gradcam_n', type=int, default=100, help='Number of Grad-CAM samples')
     p.add_argument('--batch_size', type=int, default=4)

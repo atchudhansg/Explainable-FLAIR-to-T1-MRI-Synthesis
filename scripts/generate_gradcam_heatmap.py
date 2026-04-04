@@ -2,8 +2,10 @@
 Generate Grad-CAM Heatmap for Paper Figure
 Produces a single heatmap image with colorbar like Fig. 3 in the paper.
 """
-import sys, os
-sys.path.insert(0, '/home/atchu2504/training')
+import os, sys
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT_DIR)
 
 import torch
 import torch.nn.functional as F
@@ -14,10 +16,10 @@ from models import ResNet9Generator
 from dataset import create_dataloaders
 
 # ── config ───────────────────────────────────────────────────────────────────
-CHECKPOINT = '/home/atchu2504/outputs_backup/resnet9_v6/resnet9/checkpoints/best_model.pth'
-DATA_DIR   = '/home/atchu2504/training/data'
-CACHE_DIR  = '/home/atchu2504/training/cache'
-OUTPUT_PATH = '/home/atchu2504/final-paper-submission/outputs/gradcam_saliency.png'
+CHECKPOINT = os.path.join(ROOT_DIR, 'outputs', 'resnet9_v6', 'resnet9', 'checkpoints', 'best_model.pth')
+DATA_DIR   = os.path.join(ROOT_DIR, 'data')
+CACHE_DIR  = os.path.join(ROOT_DIR, 'cache')
+OUTPUT_PATH = os.path.join(ROOT_DIR, 'outputs', 'samples', 'gradcam_saliency.png')
 device     = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)

@@ -271,7 +271,7 @@ def create_brats2023_loader(root_dir, batch_size=4, num_workers=4):
 
 
 if __name__ == '__main__':
-    root = "/home/atchu2504/training/data"
+    root = "data"
     tl, vl, _, _ = create_dataloaders(root, batch_size=4, num_workers=0)
     batch = next(iter(tl))
     print(f"Image: {batch['image'].shape}, range [{batch['image'].min():.2f}, {batch['image'].max():.2f}]")
@@ -279,7 +279,7 @@ if __name__ == '__main__':
     print(f"Train batches: {len(tl)}, Val batches: {len(vl)}")
 
     # Test BraTS 2023 loader
-    val23_root = "/home/atchu2504/training/validation"
+    val23_root = "validation"
     loader23 = create_brats2023_loader(val23_root, batch_size=2, num_workers=0)
     batch23 = next(iter(loader23))
     print(f"\nBraTS 2023 — Image: {batch23['image'].shape}, "

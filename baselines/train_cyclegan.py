@@ -14,6 +14,8 @@ Usage:
   python train_cyclegan.py --epochs 100 --batch_size 32
 """
 import os, sys, json, time, argparse
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, ROOT_DIR)
 import numpy as np
 import torch
 import torch.nn as nn
@@ -47,16 +49,16 @@ def parse_args():
                    help='Identity loss weight (paper default: 0.5 * lambda_cycle)')
     p.add_argument('--lr_decay_start', type=int, default=50,
                    help='Epoch to start linear LR decay')
-    p.add_argument('--data_dir', type=str, default='/home/atchu2504/training/data')
-    p.add_argument('--output_dir', type=str, default='/home/atchu2504/training/outputs')
+    p.add_argument('--data_dir', type=str, default=os.path.join(ROOT_DIR, 'data'))
+    p.add_argument('--output_dir', type=str, default=os.path.join(ROOT_DIR, 'outputs'))
     p.add_argument('--num_workers', type=int, default=4)
     p.add_argument('--seed', type=int, default=42)
     p.add_argument('--save_every', type=int, default=5)
     p.add_argument('--compile', action='store_true')
     p.add_argument('--cache_dir', type=str,
-                   default='/home/atchu2504/training/cache')
+                   default=os.path.join(ROOT_DIR, 'cache'))
     p.add_argument('--external_val_dir', type=str,
-                   default='/home/atchu2504/training/validation')
+                   default=os.path.join(ROOT_DIR, 'validation'))
     p.add_argument('--skip_external_val', action='store_true')
     return p.parse_args()
 

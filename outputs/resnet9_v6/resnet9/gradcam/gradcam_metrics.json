@@ -1,0 +1,30 @@
+{
+  "entropy": {
+    "mean": 11.2511,
+    "std": 0.0357
+  },
+  "spatial_variance": {
+    "mean": 0.0862,
+    "std": 0.0073
+  },
+  "peak_activation": {
+    "mean": 1.0,
+    "std": 0.0
+  },
+  "high_activation_ratio": {
+    "mean": 0.0977,
+    "std": 0.0207
+  },
+  "error_correlation": {
+    "mean": 0.3399,
+    "std": 0.0263
+  },
+  "mean_activation": {
+    "mean": 0.1842,
+    "std": 0.0098
+  },
+  "std_activation": {
+    "mean": 0.2933,
+    "std": 0.0124
+  }
+}
