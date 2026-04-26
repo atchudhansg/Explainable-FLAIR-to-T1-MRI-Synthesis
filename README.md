@@ -12,7 +12,7 @@ Cross-modal MRI synthesis enables clinicians to obtain missing diagnostic inform
 
 This paper was presented at **ICCDM 2026** (International Conference on Cybersecurity, Data Science, and Machine Learning), organized by Universiti Putra Malaysia in association with Keshav Mahavidyalaya, University of Delhi (23rd–24th April 2026).
 
-📄 [Presentation Certificate](https://drive.google.com/file/d/1Ugo2yryB-C1ocRJMUWeSFfIJHXjOY3PQ/view?usp=sharing)
+📄 [Presentation Certificate - Atchudhan](https://drive.google.com/file/d/1Ugo2yryB-C1ocRJMUWeSFfIJHXjOY3PQ/view?usp=sharing)
 
 ---
 
