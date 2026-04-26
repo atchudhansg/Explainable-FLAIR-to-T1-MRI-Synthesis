@@ -8,6 +8,12 @@ Official implementation of the paper accepted at the **International Conference 
 
 Cross-modal MRI synthesis enables clinicians to obtain missing diagnostic information without additional scans, yet existing deep learning models lack interpretability. We introduce an explainable conditional GAN that synthesises high-fidelity T1-weighted images from FLAIR scans. The architecture augments Pix2Pix with a ResNet-9 generator (11.4M parameters) and PatchGAN discriminator, with Grad-CAM integrated for voxel-level saliency maps. Through systematic loss refinement across 600 cumulative training epochs (4.11 hours on NVIDIA L4), the model achieves state-of-the-art results on BraTS 2021 and generalises to the independent BraTS 2023 GLI dataset.
 
+## Conference Presentation
+
+This paper was presented at **ICCDM 2026** (International Conference on Cybersecurity, Data Science, and Machine Learning), organized by Universiti Putra Malaysia in association with Keshav Mahavidyalaya, University of Delhi (23rd–24th April 2026).
+
+📄 [Presentation Certificate](https://drive.google.com/file/d/1Ugo2yryB-C1ocRJMUWeSFfIJHXjOY3PQ/view?usp=sharing)
+
 ---
 
 ## Results
