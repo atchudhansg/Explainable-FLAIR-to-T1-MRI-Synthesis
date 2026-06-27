@@ -174,6 +174,56 @@ validation/
 
 ---
 
+## Model Weights
+
+All trained weights are published on Hugging Face:
+**[atchusg/flair-to-t1-mri-synthesis](https://huggingface.co/atchusg/flair-to-t1-mri-synthesis)**
+
+```
+resnet9/
+  v1/ → v6/
+    generator.pth        # ResNet9Generator state_dict (11.4M params)
+    training_report.json # Hyperparams, metrics, bootstrap CIs
+```
+
+**V6 is the paper model.** V1–V5 are the iterative ablation versions.
+
+### Download and use any version
+
+```python
+from pathlib import Path
+import sys
+
+from huggingface_hub import hf_hub_download
+import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from models import ResNet9Generator
+
+# Change "v6" to any version: v1, v2, v3, v4, v5, v6
+path = hf_hub_download(
+    repo_id="atchusg/flair-to-t1-mri-synthesis",
+    filename="resnet9/v6/generator.pth",
+)
+
+checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+state_dict = checkpoint["gen"]  # checkpoints are wrapped dicts with key "gen"
+
+model = ResNet9Generator(in_channels=3, out_channels=3)
+model.load_state_dict(state_dict)
+model.eval()
+
+# Input: (B, 3, 256, 256) FLAIR slice, normalised to [-1, 1]
+# Output: (B, 3, 256, 256) synthetic T1
+with torch.no_grad():
+    synthetic_t1 = model(flair_input)
+```
+
+> A ready-to-run validation script that checks every model in the HF repo is at
+> [`scripts/test_huggingface_model.py`](scripts/test_huggingface_model.py).
+
+---
+
 ## Usage
 
 ### Train the proposed model (ResNet-9 with full compound loss)
