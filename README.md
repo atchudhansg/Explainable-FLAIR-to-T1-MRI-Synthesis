@@ -230,10 +230,15 @@ with torch.no_grad():
 
 ```bash
 python train.py \
+ \
   --model resnet9 \
+ \
   --epochs 100 \
+ \
   --batch_size 64 \
+ \
   --lr 1e-5 \
+ \
   --lambda_l1 10 \
   --lambda_ssim 10 \
   --lambda_perceptual 10 \
@@ -262,17 +267,63 @@ python baselines/train_cyclegan.py --epochs 100 --batch_size 12
 python baselines/train_attentiongan.py --epochs 100 --batch_size 12
 ```
 
-### Fine-tune from a checkpoint
+### Fine-tune and Resume Training
+
+#### Option 1: Fine-tune from a local checkpoint
 
 ```bash
 python train.py \
   --finetune_from outputs/resnet9_v5/resnet9/checkpoints/best_gen_weights.pth \
-  --output_dir outputs/resnet9_v6 \
+  --output_dir outputs/resnet9_v6_ft \
+  --epochs 50 \
   --lr 1e-5 \
+  --batch_size 64 \
+  --lambda_l1 10 \
+  --lambda_ssim 10 \
+  --lambda_perceptual 10 \
+  --lambda_feat 10 \
   --lambda_edge 20 \
   --lambda_contrast 5 \
-  ...
+  --lsgan \
+  --ms_ssim
 ```
+
+#### Option 2: Fine-tune from Hugging Face
+
+Download a pretrained model from HF and use it for fine-tuning:
+
+```python
+from huggingface_hub import hf_hub_download
+
+# Download v6 model (the paper model)
+path = hf_hub_download(
+    repo_id="atchusg/flair-to-t1-mri-synthesis",
+    filename="resnet9/v6/generator.pth",
+)
+```
+
+Then pass to training script:
+
+```bash
+python train.py \
+  --finetune_from /path/to/downloaded/generator.pth \
+  --output_dir outputs/my_finetuned_model \
+  --epochs 30 \
+  --lr 1e-5
+```
+
+#### Option 3: Resume interrupted training
+
+If training was interrupted, resume from the last checkpoint:
+
+```bash
+python train.py \
+  --resume \
+  --output_dir outputs/resnet9_v6 \
+  --epochs 100
+```
+
+The script will automatically find the latest checkpoint in the output directory and resume from there. If no checkpoint exists, it will start fresh.
 
 ### Evaluate (Grad-CAM analysis)
 
